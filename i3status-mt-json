@@ -1,0 +1,291 @@
+#!/usr/bin/perl
+# vim: set ai et ts=8 sw=8 sts=8 ft=perl :
+
+# set username
+# set uptime
+# set time
+# set xtitle of focused window
+# set list of windows for current tag
+# set list of windows for all tags
+# set la
+# set current language
+# set battery charge
+
+# main loop impl. :
+# save cur. str and compare it with prev. if it differs - update
+
+# proposed: 3 types of loop:
+# slow loop for batt charge, la
+# 1 second loop for time, uptime
+# main (fast) loop for window name, language
+
+use Fcntl;
+use threads;
+use threads::shared;
+
+sub gettimestr();
+sub getfocusedwidowtitlestr();
+sub getlangstr();
+sub getuptimestr();
+sub getlastr();
+sub getbatterychargestr1();
+sub getbatterychargestr2();
+sub getinboxstat();
+sub getproblemsstat();
+
+sub slow_thread();
+sub onesec_thread();
+
+my $pstr = '';
+
+my $charge :shared;
+my $la :shared;
+my $uptime :shared;
+my $time :shared;
+my $inbox :shared;
+my $problems :shared;
+
+my $default_color = '#3e78fd';
+
+threads->create('slow_thread');
+threads->create('onesec_thread');
+
+sleep 1;
+
+syswrite STDOUT, "{\"version\":1, \"click_events\": true}\n";
+syswrite STDOUT, "[\n[],\n";
+while(1){
+	$str = "[ ";
+#	$str .= getfocusedwidowtitlestr() . ",";
+	$str .= getfocusedwidowtitlestr() . ", ";
+	$str .= sprintf("{ \"name\" : \"username\", \"full_text\" : \"%s\", \"color\" : \"%s\" }", $ENV{'USER'}, $default_color) . ", ";
+	$str .= getlangstr() . ", ";
+	$str .= $uptime . ", ";
+	$str .= $la . ", ";
+	$str .= $charge . ", ";
+	$str .= $time;
+	$str .= " ],\n";
+	if($pstr ne $str){
+		syswrite STDOUT, "$str\n";
+		$pstr = $str;
+	}
+
+# sleep for 0.333 second;
+	select(undef, undef, undef, 0.333);
+}
+
+sub slow_thread(){
+	threads->detach();
+
+	while(1){
+		$charge = getbatterychargestr2();
+		$la = getlastr();
+		sleep 300;
+	}
+}
+
+sub onesec_thread(){
+	threads->detach();
+
+	while(1){
+		$uptime = getuptimestr();
+		$time = gettimestr();
+		$inbox = getinboxstat();
+		$problems = getproblemsstat();
+# as we report time with precision of 1 minute, update 1/60 seconds
+		sleep 60;
+	}
+
+}
+
+
+sub gettimestr(){
+	my ($sec, $min, $hour, $mday, $mon, $year, $wday) = (localtime)[0,1,2,3,4,5,6];
+	my @months = ('Янв', 'Фев', 'Мар', 'Апр', 'Май', 'Июн', 'Июл', 'Авг', 'Сен', 'Окт', 'Ноя', 'Дек');
+	my @wdays = ('Вс', 'Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб');
+	$year = $year + 1900;
+
+	my $str .= sprintf("{ \"name\" : \"time\", \"full_text\" : \"%s, %s %s %s  %02s:%02s\", \"color\" : \"%s\" }", $wdays[$wday], $mday, $months[$mon], $year, $hour, $min, $default_color);
+
+	undef $sec; undef $min; undef $hour; undef $mday; undef $mon; undef $year; undef $wday;
+	@months = -1; undef @months;
+	@wdays = -1; undef @wdays;
+
+	return $str;
+}
+
+sub getfocusedwidowtitlestr(){
+	my $str;
+
+	if (-x '/usr/bin/xdotool'){
+		$str = `xdotool getactivewindow getwindowname`;
+	}elsif (-x '/usr/bin/xprop'){
+		$str = (split( /=/, `xprop -id \$(xprop -root _NET_ACTIVE_WINDOW | cut -d ' ' -f 5) _NET_WM_NAME`))[1];
+		chop $str; chop $str; $str = reverse $str; chop $str; chop $str; $str = reverse $str;
+	}
+
+	chomp($str);
+	$string =~ s/[\"|\{|\}|\'|,]/_/g;
+
+	if (length($string) > 64){
+		$string = substr($string, 0, 64);
+	}
+
+	$str = sprintf ("{ \"name\" : \"title\", \"full_text\" : \"%s\", \"color\" : \"%s\" }", $str, $default_color);
+
+	return $str;
+}
+
+sub getuptimestr(){
+	if(tell(UPTIME) == -1){ open UPTIME, "/proc/uptime"; };
+
+	$u = <UPTIME>;
+	seek UPTIME, SEEK_SET, 0;
+	$u = (split(/ /, $u, 2))[0];
+	$days = int($u / 86400); # 86400 = 1 day
+	$hours = int(($u - (86400 * $days)) / 3600); # 3600 = 1 hour
+	$minutes = int(($u - (86400 * $days) - (3600 * $hours)) / 60);
+	$seconds = int($u - (86400 * $days) - (3600 * $hours) - (60 * $minutes));
+	my $str = sprintf("{ \"name\" : \"uptime\", \"full_text\" : \"UP: %sd,%02sh,%02sm\", \"color\" : \"%s\" }", $days, $hours, $minutes, $default_color);
+
+	undef $u; undef $days; undef $hours; undef $minutes; undef $seconds;
+
+	return $str;
+}
+
+sub getlastr(){
+	if(tell(LA) == -1){ open LA, "/proc/loadavg"; };
+
+	my $la = <LA>;
+	seek LA, SEEK_SET, 0;
+	$la = (split(/ /, $la, 2))[0];
+	$la = sprintf("{ \"name\" : \"la\", \"full_text\" : \"LA: %s\", \"color\" : \"%s\" }", $la, $default_color);
+
+	return $la;
+}
+
+sub getbatterychargestr1(){
+	my $str = '';
+
+	if (-f "/sys/class/power_supply/BAT0/present"){
+		open A, "/sys/class/power_supply/BAT0/present";
+		$P = <A>;
+		close A;
+		chomp($P);
+
+		if($P eq '1'){
+			open A, "/sys/class/power_supply/BAT0/energy_full";
+			my $full_charge = <A>; chomp($full_charge); close A;
+			open A, "/sys/class/power_supply/BAT0/energy_now";
+			my $current_charge = <A>; chomp($current_charge); close A;
+			$str .= sprintf("Bat:%03d%%", int(($current_charge / $full_charge) * 100) );
+			undef $current_charge; undef $full_charge;
+		}
+	}
+
+	$str = sprintf("{ \"name\" : \"powersource\", \"full_text\" : \"%s\", \"color\" : \"#555555\" }", $str);
+
+	return $str;
+}
+
+sub getbatterychargestr2(){
+	my $str = '';
+	my $color = $default_color;
+	open AC,"/sys/class/power_supply/ADP1/online";
+
+	if(<AC> == 1){
+		$str .= "AC";
+	}else{
+		$str .= "DC";
+	}
+
+	close AC; # display % charge only if possible
+	if (open DC,"/sys/class/power_supply/BAT0/capacity"){
+		my $charge = <DC>;
+		close DC;
+		chomp($charge);
+
+		if ($charge < 10){
+			$color = '#800000';
+		} elsif (($charge >= 10) and ($charge < 25)){
+			$color = '#ffa500';
+		} elsif (($charge >= 25) and ($charge < 80)){
+			$color = '#008000';
+		} else {
+			$color = '#0000a0';
+		}
+
+		$str .= " $charge";
+	}
+
+	$str = sprintf("{ \"name\" : \"powersource\", \"full_text\" : \"Power: %s%%\", \"color\" : \"%s\" }", $str, $color);
+
+	return $str;
+}
+
+sub getlangstr(){
+	my $str .= "Lang: ";
+
+	if(`xset -q` =~ /Group 2:     on /o){
+		$str .= "RU";
+	}else{
+		$str .= "EN";
+	}
+
+	$str = sprintf("{ \"name\":\"lang\", \"full_text\" : \"%s\", \"color\" : \"%s\" }", $str, $default_color);
+
+	return $str;
+}
+
+sub getinboxstat(){
+	if((-d "$ENV{'HOME'}/Maildir/INBOX/cur") and (-d "$ENV{'HOME'}/Maildir/INBOX/new")){
+		my $inboxtotal = 0;
+		my $inboxunread = 0;
+		my $inboxunseen = 0;
+		opendir DIR, "$ENV{'HOME'}/Maildir/INBOX/cur";
+		foreach (readdir(DIR)){
+			next if ($_ eq '.');
+			next if ($_ eq '..');
+			unless ($_ =~ /,F?R?S$/){ $inboxunread++; }
+			$inboxtotal++;
+		}
+		closedir DIR;
+		opendir DIR, "$ENV{'HOME'}/Maildir/INBOX/new";
+		foreach (readdir(DIR)){
+			next if ($_ eq '.');
+			next if ($_ eq '..');
+			unless ($_ =~ /,F?R?S$/){ $inboxunread++; $inboxunseen++; }
+			$inboxtotal++;
+		}
+		closedir DIR;
+		return (sprintf("i %d/%d/%d", $inboxunseen, $inboxunread, $inboxtotal));
+	}
+	return('');
+}
+
+sub getproblemsstat(){
+	if((-d "$ENV{'HOME'}/Maildir/Problems/cur") and (-d "$ENV{'HOME'}/Maildir/Problems/new")){
+		my $inboxtotal = 0;
+		my $inboxunread = 0;
+		my $inboxunseen = 0;
+		opendir DIR, "$ENV{'HOME'}/Maildir/Problems/cur";
+		foreach (readdir(DIR)){
+			next if ($_ eq '.');
+			next if ($_ eq '..');
+			unless ($_ =~ /,F?R?S$/){ $inboxunread++; }
+			$inboxtotal++;
+		}
+		closedir DIR;
+		opendir DIR, "$ENV{'HOME'}/Maildir/Problems/new";
+		foreach (readdir(DIR)){
+			next if ($_ eq '.');
+			next if ($_ eq '..');
+			unless ($_ =~ /,F?R?S$/){ $inboxunread++; $inboxunseen++; }
+			$inboxtotal++;
+		}
+		closedir DIR;
+		return (sprintf("p %d/%d/%d", $inboxunseen, $inboxunread, $inboxtotal));
+	}
+	return('');
+}
+

@@ -1,0 +1,340 @@
+#!/usr/bin/perl
+
+use Fcntl;
+use POSIX;
+
+use JSON::PP;
+use utf8;
+use Encode;
+use open qw(:std :utf8);
+
+use threads;
+use threads::shared;
+
+sub gettimestr();
+sub getfocusedwidowtitlestr();
+sub getuptimestr();
+sub getlastr();
+sub getbatterychargestr1();
+sub getbatterychargestr2();
+
+sub slow_thread();
+sub onesec_thread();
+sub reader();
+sub launcher($);
+
+my @charge :shared;
+my $la :shared;
+my $uptime :shared;
+my $time :shared;
+my $shoot :shared = 1;
+
+my $default_color = '#5c5b5a';
+my $blue_color = '#3e78fd';
+
+my @name = qw /
+	ff     vv       ch     con   tel         pid  hc   mp   db   kee
+	title  username uptime la    powersource time /;
+
+my @align = qw /
+	left   left     left   left  left        left left left left left
+	center right    right  right right       right /;
+
+my $a;
+my %name_index;
+
+for (my $i =  0; $i < @name; $i++) {
+	$name_index{$name[$i]} = $i;
+	$a->[$i]->{'name'} = $name[$i];
+
+	if ($name[$i] eq 'username') {
+		$a->[$i]->{'full_text'} = $ENV{'USER'};
+	} elsif ($name[$i] eq 'title') {
+		$a->[$i]->{'min_width'} = '                                       ';
+	} else {
+		$a->[$i]->{'full_text'} = $name[$i];
+	}
+
+	$a->[$i]->{'color'} = $blue_color;
+
+	if ($align[$i] eq 'left') {
+		$align[$i] = "center";
+		$a->[$i]->{'color'} = $default_color;
+		$a->[$i]->{'separator_block_width'} = 1;
+		$a->[$i]->{'separator'} = JSON::PP::false;
+		$a->[$i]->{'border'} = '#3dbaf4';
+		$a->[$i]->{'min_width'} = sprintf(' %s ', $name[$i]);
+	}
+
+	$a->[$i]->{'align'} = $align[$i];
+}
+
+my $title;
+my $prev_title = '';
+
+threads->create('slow_thread');
+threads->create('onesec_thread');
+threads->create('reader');
+
+sleep 1;
+
+syswrite STDOUT, "{\"version\":1, \"click_events\": true}\n";
+syswrite STDOUT, "[\n[],\n";
+
+while (1) {
+	my $in = '';
+
+	$title = getfocusedwidowtitlestr();
+
+	if ($title ne $prev_title) {
+		$shoot = 1;
+		$prev_title = $title;
+	}
+
+	if ($shoot == 1) {
+		$a->[$name_index{'title'}]->{'full_text'} = $title;
+		$a->[$name_index{'uptime'}]->{'full_text'} = $uptime;
+		$a->[$name_index{'la'}]->{'full_text'} = $la;
+		$a->[$name_index{'powersource'}]->{'full_text'} = $charge[0];
+		$a->[$name_index{'powersource'}]->{'color'} = $charge[1];
+		$a->[$name_index{'time'}]->{'full_text'} = $time;
+		my $json = JSON::PP->new;
+		$json = $json->ascii(0);
+		$json = $json->utf8(0);
+		$json = $json->allow_unknown (0);
+		$json = $json->canonical(1);
+		$json = $json->space_before(0);
+		$json = $json->space_after(0);
+		$json = $json->indent(0);
+		my $str = $json->encode($a);
+		undef $json;
+		syswrite STDOUT, $str . ",\n";
+		undef $str;
+		$shoot = 0;
+	}
+
+# sleep for 0.333 second;
+	select(undef, undef, undef, 0.333);
+}
+
+sub slow_thread() {
+	threads->detach();
+	my @prev_charge = ('','');
+	my @current_charge;
+	my $prev_la = '';
+	my $current_la;
+
+	while (1) {
+		@current_charge = getbatterychargestr2();
+
+		if ($current_charge[0] ne $prev_charge[0]) {
+			$shoot = 1;
+			@prev_charge = @current_charge;
+			@charge = @current_charge;
+		}
+
+		$current_la = getlastr();
+
+		if ($current_la ne $prev_la) {
+			$shoot = 1;
+			$prev_la = $current_la;
+			$la = $current_la;
+		}
+
+		sleep 300;
+	}
+}
+
+sub onesec_thread() {
+	threads->detach();
+
+	while (1) {
+		$uptime = getuptimestr();
+		$time = gettimestr();
+# as we report time with precision of 1 minute, update 1/60 seconds
+		$shoot = 1;
+		sleep 60;
+	}
+}
+
+
+sub gettimestr() {
+	my ($sec, $min, $hour, $mday, $mon, $year, $wday) = (localtime)[0,1,2,3,4,5,6];
+	my @months = ('Янв', 'Фев', 'Мар', 'Апр', 'Май', 'Июн', 'Июл', 'Авг', 'Сен', 'Окт', 'Ноя', 'Дек');
+	my @wdays = ('Вс', 'Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб');
+	$year = $year + 1900;
+
+	my $z = sprintf("%s, %s %s %s  %02s:%02s", $wdays[$wday], $mday, $months[$mon], $year, $hour, $min),
+
+	undef $sec; undef $min; undef $hour; undef $mday; undef $mon; undef $year; undef $wday;
+	@months = -1; undef @months;
+	@wdays = -1; undef @wdays;
+
+	return $z;
+}
+
+sub getfocusedwidowtitlestr() {
+	my $str;
+
+	if (-x '/usr/bin/xdotool') {
+		$str = `xdotool getactivewindow getwindowname`;
+	} elsif (-x '/usr/bin/xprop') {
+		$str = (split( /=/, `xprop -id \$(xprop -root _NET_ACTIVE_WINDOW | cut -d ' ' -f 5) _NET_WM_NAME`))[1];
+		chop $str; chop $str; $str = reverse $str; chop $str; chop $str; $str = reverse $str;
+	}
+
+	chomp($str);
+	$str =~ s/[\"|\{|\}|\'|,|\(|\)|\[|\]]/ /g;
+
+	if (int(length($str)) > 24) {
+		$str = substr($str, 0, 25);
+	} elsif (int(length($str)) < 1) {
+		$str = ' ';
+	}
+
+	# not sure about utf-8-ness of this chunk, so try to check it
+	$str = eval { decode('UTF-8', $str, Encode::FB_CROAK) } // ' ';
+
+	return $str;
+}
+
+sub getuptimestr() {
+	if(tell(UPTIME) == -1){ open UPTIME, "/proc/uptime"; };
+
+	my $u = <UPTIME>;
+	seek UPTIME, SEEK_SET, 0;
+	$u = (split(/ /, $u, 2))[0];
+	my $days = int($u / 86400); # 86400 = 1 day
+	my $hours = int(($u - (86400 * $days)) / 3600); # 3600 = 1 hour
+	my $minutes = int(($u - (86400 * $days) - (3600 * $hours)) / 60);
+	my $seconds = int($u - (86400 * $days) - (3600 * $hours) - (60 * $minutes));
+
+	$u = sprintf("UP: %sd,%02sh,%02sm", $days, $hours, $minutes);
+
+	undef $days; undef $hours; undef $minutes; undef $seconds;
+
+	return $u;
+}
+
+sub getlastr() {
+	if(tell(LA) == -1){ open LA, "/proc/loadavg"; };
+
+	my $la = <LA>;
+	seek LA, SEEK_SET, 0;
+	$la = (split(/ /, $la, 2))[0];
+
+	return $la;
+}
+
+sub getbatterychargestr1() {
+	my $str = '';
+
+	if (-f "/sys/class/power_supply/BAT0/present"){
+		open A, "/sys/class/power_supply/BAT0/present";
+		my $P = <A>;
+		close A;
+		chomp($P);
+
+		if($P eq '1') {
+			open A, "/sys/class/power_supply/BAT0/energy_full";
+			my $full_charge = <A>; chomp($full_charge); close A;
+			open A, "/sys/class/power_supply/BAT0/energy_now";
+			my $current_charge = <A>; chomp($current_charge); close A;
+			$str .= sprintf("Bat:%03d%%", int(($current_charge / $full_charge) * 100) );
+			undef $current_charge; undef $full_charge;
+		}
+
+		undef $P;
+	}
+
+	my @z = ($str, '#555555');
+
+	return @z;
+}
+
+sub getbatterychargestr2() {
+	my $str = '';
+	my $color = $default_color;
+	my $file;
+
+	if (-f "/sys/class/power_supply/ADP1/online") {
+		$file = "/sys/class/power_supply/ADP1/online";
+	} elsif ("/sys/class/power_supply/AC/online") {
+		$file = "/sys/class/power_supply/AC/online";
+	} else {
+		return ('??', '??%');
+	}
+
+	open AC, $file or return ('??', '??%');
+
+	if (<AC> == 1) {
+		$str .= "AC";
+	} else {
+		$str .= "DC";
+	}
+
+	close AC; # display % charge only if possible
+	if (open DC,"/sys/class/power_supply/BAT0/capacity") {
+		my $charge = <DC>;
+		close DC;
+		chomp($charge);
+
+		if ($charge < 10){
+			$color = '#800000';
+		} elsif (($charge >= 10) and ($charge < 25)) {
+			$color = '#ffa500';
+		} elsif (($charge >= 25) and ($charge < 80)) {
+			$color = '#008000';
+		} else {
+			$color = '#0000a0';
+		}
+
+		$str .= " $charge";
+	}
+
+	my @z = (sprintf("Power: %s%%", $str), $color);
+
+	return @z;
+}
+
+sub reader() {
+	threads->detach();
+	my $str = '';
+	my $j;
+
+	while (<STDIN>) {
+		$str = $_;
+
+		if (substr($str, 0, 1) ne '{') {
+			$str = substr($str, 1);
+		}
+
+		chomp($str);
+		next if ((length($str) < 2) or (substr($str, -1, 1) ne '}'));
+
+		$j = decode_json($str);
+		if ($j->{'button'} eq '1') {
+			if ($j->{'name'} eq 'ff')  { threads->create('launcher', '/usr/bin/firefox'); }
+			if ($j->{'name'} eq 'vv')  { threads->create('launcher', '/usr/local/bin/vivaldi'); }
+			if ($j->{'name'} eq 'ch')  { threads->create('launcher', '/usr/bin/chromium'); }
+			if ($j->{'name'} eq 'con') { threads->create('launcher', '/usr/bin/urxvt'); }
+			if ($j->{'name'} eq 'tel') { threads->create('launcher', '/home/eleksir/.local/bin/Telegram'); }
+			if ($j->{'name'} eq 'pid') { threads->create('launcher', '/usr/bin/pidgin'); }
+			if ($j->{'name'} eq 'hc')  { threads->create('launcher', '/usr/bin/hexchat'); }
+			if ($j->{'name'} eq 'mp')  { threads->create('launcher', '/usr/bin/mousepad'); }
+			if ($j->{'name'} eq 'db')  { threads->create('launcher', '/usr/bin/deadbeef'); }
+			if ($j->{'name'} eq 'kee') { threads->create('launcher', '/home/eleksir/.local/bin/kee'); }
+		}
+	}
+}
+
+sub launcher($) {
+	my $prog = shift;
+	threads->detach();
+
+	if (fork() == 0) {
+		exec ($prog);
+	}
+}
+
+# vim: set ai tabstop=8 softtabstop=8 shiftwidth=8 noexpandtab ft=perl : #

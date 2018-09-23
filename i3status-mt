@@ -1,0 +1,230 @@
+#!/usr/bin/perl
+# vim: set ai et ts=8 sw=8 sts=8 :
+
+# set username
+# set uptime
+# set time
+# set xtitle of focused window
+# set list of windows for current tag
+# set list of windows for all tags
+# set la
+# set current language
+# set battery charge
+
+# main loop impl. :
+# save cur. str and compare it with prev. if it differs - update
+
+# proposed: 3 types of loop:
+# slow loop for batt charge, la
+# 1 second loop for time, uptime
+# main (fast) loop for window name, language
+
+use Fcntl;
+use Encode qw(decode encode);
+use threads;
+use threads::shared;
+
+sub gettimestr();
+sub getfocusedwidowtitlestr();
+sub getlangstr();
+sub getuptimestr();
+sub getlastr();
+sub getbatterychargestr1();
+sub getbatterychargestr2();
+
+sub slow_thread();
+sub onesec_thread();
+
+my $pstr = '';
+
+my $charge :shared;
+my $la :shared;
+my $uptime :shared;
+my $time :shared;
+
+threads->create('slow_thread');
+threads->create('onesec_thread');
+
+sleep 1;
+
+while(1){
+	$str = '';
+	$str .= getfocusedwidowtitlestr();
+	$str .= "$ENV{'USER'}";
+	$str .= getlangstr();
+	$str .= $uptime;
+	$str .= $la;
+	$str .= $charge;
+	$str .= $time;
+
+	if($pstr ne $str){
+		syswrite STDOUT, "$str\n";
+		$pstr = $str;
+	}
+
+# sleep for 0.333 second;
+	select(undef, undef, undef, 0.333);
+}
+
+
+sub slow_thread(){
+	threads->detach();
+
+	while(1){
+		$charge = getbatterychargestr2();
+		$la = getlastr();
+		sleep 300;
+	}
+}
+
+
+sub onesec_thread(){
+	threads->detach();
+
+	while(1){
+		$uptime = getuptimestr();
+		$time = gettimestr();
+# as we report time with precision of 1 minute, update 1/60 seconds
+		sleep 60;
+	}
+}
+
+
+sub gettimestr(){
+	my ($sec, $min, $hour, $mday, $mon, $year, $wday) = (localtime)[0,1,2,3,4,5,6];
+	my @months = ('Янв', 'Фев', 'Мар', 'Апр', 'Май', 'Июн', 'Июл', 'Авг', 'Сен', 'Окт', 'Ноя', 'Дек');
+	my @wdays = ('Вс', 'Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб');
+	$year = $year + 1900;
+
+	my $str .= sprintf(" |     %s, %s %s %s  %02s:%02s  ", $wdays[$wday], $mday, $months[$mon], $year, $hour, $min);
+
+	undef $sec; undef $min; undef $hour; undef $mday; undef $mon; undef $year; undef $wday;
+	@months = -1; undef @months;
+	@wdays = -1; undef @wdays;
+
+	return $str;
+}
+
+
+sub getfocusedwidowtitlestr() {
+# making some utf-8 mumbo-jumbo :(
+	my $str;
+	utf8::upgrade($str);
+
+	if (-x '/usr/bin/xdotool'){
+		$str = `xdotool getactivewindow getwindowname`;
+	}elsif (-x '/usr/bin/xprop'){
+		$str = (split( /=/, `xprop -id \$(xprop -root _NET_ACTIVE_WINDOW | cut -d ' ' -f 5) _NET_WM_NAME`))[1];
+		chop $str; chop $str; $str = reverse $str; chop $str; chop $str; $str = reverse $str;
+	}
+
+	chomp($str);
+
+	$str = encode('UTF-8', decode('UTF-8', $str));
+
+	if (length($str) != 0) {
+		my $stripped = undef;
+
+		if (length($str) > 40){
+			$str = substr($str, -38, 38);
+			$str = encode('UTF-8', decode('UTF-8', $str));
+			$str = ' ... ' . $str;
+		}
+
+		$str = '['. $str .']    | ';
+	}else{
+		$str = '| ';
+	}
+
+	return $str;
+}
+
+
+sub getuptimestr(){
+	if(tell(UPTIME) == -1){ open UPTIME, "/proc/uptime"; };
+
+	$u = <UPTIME>;
+	seek UPTIME, SEEK_SET, 0;
+	$u = (split(/ /, $u, 2))[0];
+	$days = int($u / 86400); # 86400 = 1 day
+	$hours = int(($u - (86400 * $days)) / 3600); # 3600 = 1 hour
+	$minutes = int(($u - (86400 * $days) - (3600 * $hours)) / 60);
+	$seconds = int($u - (86400 * $days) - (3600 * $hours) - (60 * $minutes));
+	my $str = sprintf(" | up:[%sd,%02sh,%02sm]", $days, $hours, $minutes);
+
+	undef $u; undef $days; undef $hours; undef $minutes; undef $seconds;
+
+	return $str;
+}
+
+
+sub getlastr(){
+	if(tell(LA) == -1){ open LA, "/proc/loadavg"; };
+
+	my $la = <LA>;
+	seek LA, SEEK_SET, 0;
+	$la = (split(/ /, $la, 2))[0];
+
+	return (" | LA:[$la]");
+}
+
+
+sub getbatterychargestr1(){
+	my $str = '';
+
+	if (-f "/sys/class/power_supply/BAT0/present"){
+		open A, "/sys/class/power_supply/BAT0/present";
+		$P = <A>;
+		close A;
+		chomp($P);
+
+		if($P eq '1'){
+			open A, "/sys/class/power_supply/BAT0/charge_full";
+			my $full_charge = <A>; chomp($full_charge); close A;
+			open A, "/sys/class/power_supply/BAT0/charge_now";
+			my $current_charge = <A>; chomp($current_charge); close A;
+			$str .= sprintf(" | Bat:[%03d%%]", int(($current_charge / $full_charge) * 100) );
+			undef $current_charge; undef $full_charge;
+		}
+	}
+
+	return $str;
+}
+
+
+sub getbatterychargestr2(){
+	my $str .= " | Power:[";
+	open AC,"/sys/class/power_supply/ADP1/online";
+
+	if(<AC> == 1){
+		$str .= "AC";
+	}else{
+		$str .= "DC";
+	}
+
+	close AC; # display % charge only if possible
+	if (open DC,"/sys/class/power_supply/BAT0/capacity"){
+		$str .= ' '. <DC>;
+		close DC;
+		chomp $str;
+		$str .= '%';
+	}
+	$str .= "]";
+
+	return $str;
+}
+
+
+sub getlangstr(){
+	my $str .= " | Lang:[";
+
+	if(`xset -q` =~ /Group 2:     on /o){
+		$str .= "RU]";
+	}else{
+		$str .= "EN]";
+	}
+
+	return $str;
+}
+
+
