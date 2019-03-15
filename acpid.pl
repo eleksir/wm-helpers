@@ -109,8 +109,10 @@ while ( sleep(180) ) {
 	chomp($buf); # just in case
 
 	if ($buf < $MIN_CHARGE) {
-		logger("Battery charge is less than 10%, hibernating\n");
-		`dbus-send --system --print-reply --dest="org.freedesktop.UPower" /org/freedesktop/UPower org.freedesktop.UPower.Hibernate`;
+		if ($charging != 0) { # discharging
+			logger("Battery charge is less than 10%, hibernating\n");
+			`dbus-send --system --print-reply --dest="org.freedesktop.UPower" /org/freedesktop/UPower org.freedesktop.UPower.Hibernate`;
+		}
 	} else {
 		if ($buf < ($MIN_CHARGE + 5)) {
 			`notify-send --urgency=critical --expire-time=10000 --icon=battery-caution "Low battery charge: $buf%"`;
