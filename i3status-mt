@@ -1,5 +1,5 @@
 #!/usr/bin/perl
-# vim: set ai et ts=8 sw=8 sts=8 :
+# vim: set ai et ts=8 sw=8 sts=8 ft=perl :
 
 # set username
 # set uptime
@@ -16,13 +16,16 @@
 
 # proposed: 3 types of loop:
 # slow loop for batt charge, la
-# 1 second loop for time, uptime
-# main (fast) loop for window name, language
+# 1 second loop for time, uptime - generally, it looks like we do not need poll every second
+#                                  timers if clock granularity set to 1 minute or even coarse
+# main (fast) loop for window name, language, it looks like we have some room here for greater
+# improvement, when it'll be more clear how get info directly from x server
 
 use Fcntl;
-use Encode qw(decode encode);
 use threads;
 use threads::shared;
+binmode STDOUT;
+binmode STDERR;
 
 sub gettimestr();
 sub getfocusedwidowtitlestr();
@@ -31,6 +34,7 @@ sub getuptimestr();
 sub getlastr();
 sub getbatterychargestr1();
 sub getbatterychargestr2();
+sub meminfo();
 
 sub slow_thread();
 sub onesec_thread();
@@ -41,6 +45,7 @@ my $charge :shared;
 my $la :shared;
 my $uptime :shared;
 my $time :shared;
+my $mem :shared;
 
 threads->create('slow_thread');
 threads->create('onesec_thread');
@@ -49,11 +54,12 @@ sleep 1;
 
 while(1){
 	$str = '';
-	$str .= getfocusedwidowtitlestr();
-	$str .= "$ENV{'USER'}";
+#	$str .= getfocusedwidowtitlestr();
+#	$str .= "$ENV{'USER'}";
 	$str .= getlangstr();
 	$str .= $uptime;
 	$str .= $la;
+	$str .= $mem;
 	$str .= $charge;
 	$str .= $time;
 
@@ -66,7 +72,6 @@ while(1){
 	select(undef, undef, undef, 0.333);
 }
 
-
 sub slow_thread(){
 	threads->detach();
 
@@ -77,7 +82,6 @@ sub slow_thread(){
 	}
 }
 
-
 sub onesec_thread(){
 	threads->detach();
 
@@ -85,8 +89,10 @@ sub onesec_thread(){
 		$uptime = getuptimestr();
 		$time = gettimestr();
 # as we report time with precision of 1 minute, update 1/60 seconds
+		$mem = meminfo();
 		sleep 60;
 	}
+
 }
 
 
@@ -105,32 +111,22 @@ sub gettimestr(){
 	return $str;
 }
 
-
-sub getfocusedwidowtitlestr() {
-# making some utf-8 mumbo-jumbo :(
+sub getfocusedwidowtitlestr(){
 	my $str;
-	utf8::upgrade($str);
 
 	if (-x '/usr/bin/xdotool'){
 		$str = `xdotool getactivewindow getwindowname`;
 	}elsif (-x '/usr/bin/xprop'){
-		$str = (split( /=/, `xprop -id \$(xprop -root _NET_ACTIVE_WINDOW | cut -d ' ' -f 5) _NET_WM_NAME`))[1];
-		chop $str; chop $str; $str = reverse $str; chop $str; chop $str; $str = reverse $str;
+		$str = (split( / = /, `xprop -id \$(xprop -root _NET_ACTIVE_WINDOW | cut -d ' ' -f 5) _NET_WM_NAME`))[1];
+		chop $str; chop $str;
 	}
 
 	chomp($str);
 
-	$str = encode('UTF-8', decode('UTF-8', $str));
-
 	if (length($str) != 0) {
-		my $stripped = undef;
-
-		if (length($str) > 40){
-			$str = substr($str, -38, 38);
-			$str = encode('UTF-8', decode('UTF-8', $str));
-			$str = ' ... ' . $str;
+		if (length($str) > 64){
+			$str = '...' . substr($str, 0, -61);
 		}
-
 		$str = '['. $str .']    | ';
 	}else{
 		$str = '| ';
@@ -138,7 +134,6 @@ sub getfocusedwidowtitlestr() {
 
 	return $str;
 }
-
 
 sub getuptimestr(){
 	if(tell(UPTIME) == -1){ open UPTIME, "/proc/uptime"; };
@@ -150,13 +145,12 @@ sub getuptimestr(){
 	$hours = int(($u - (86400 * $days)) / 3600); # 3600 = 1 hour
 	$minutes = int(($u - (86400 * $days) - (3600 * $hours)) / 60);
 	$seconds = int($u - (86400 * $days) - (3600 * $hours) - (60 * $minutes));
-	my $str = sprintf(" | up:[%sd,%02sh,%02sm]", $days, $hours, $minutes);
+	my $str = sprintf(" | up: %sd,%02sh,%02sm ", $days, $hours, $minutes);
 
 	undef $u; undef $days; undef $hours; undef $minutes; undef $seconds;
 
 	return $str;
 }
-
 
 sub getlastr(){
 	if(tell(LA) == -1){ open LA, "/proc/loadavg"; };
@@ -165,9 +159,8 @@ sub getlastr(){
 	seek LA, SEEK_SET, 0;
 	$la = (split(/ /, $la, 2))[0];
 
-	return (" | LA:[$la]");
+	return (" | LA: $la ");
 }
-
 
 sub getbatterychargestr1(){
 	my $str = '';
@@ -179,11 +172,11 @@ sub getbatterychargestr1(){
 		chomp($P);
 
 		if($P eq '1'){
-			open A, "/sys/class/power_supply/BAT0/charge_full";
+			open A, "/sys/class/power_supply/BAT0/energy_full";
 			my $full_charge = <A>; chomp($full_charge); close A;
-			open A, "/sys/class/power_supply/BAT0/charge_now";
+			open A, "/sys/class/power_supply/BAT0/energy_now";
 			my $current_charge = <A>; chomp($current_charge); close A;
-			$str .= sprintf(" | Bat:[%03d%%]", int(($current_charge / $full_charge) * 100) );
+			$str .= sprintf(" | Bat: %03d%% ", int(($current_charge / $full_charge) * 100) );
 			undef $current_charge; undef $full_charge;
 		}
 	}
@@ -191,9 +184,8 @@ sub getbatterychargestr1(){
 	return $str;
 }
 
-
 sub getbatterychargestr2(){
-	my $str .= " | Power:[";
+	my $str .= " | Power: ";
 	open AC,"/sys/class/power_supply/ADP1/online";
 
 	if(<AC> == 1){
@@ -209,22 +201,36 @@ sub getbatterychargestr2(){
 		chomp $str;
 		$str .= '%';
 	}
-	$str .= "]";
 
 	return $str;
 }
 
-
 sub getlangstr(){
-	my $str .= " | Lang:[";
+	my $str .= " | Lang: ";
 
 	if(`xset -q` =~ /Group 2:     on /o){
-		$str .= "RU]";
+		$str .= "RU";
 	}else{
-		$str .= "EN]";
+		$str .= "EN";
 	}
 
 	return $str;
 }
 
+sub meminfo() {
+	open (M, "/proc/meminfo");
+	my @mem = <M>;
+	close M;
+	@mem = map { substr($_, 0, -4) } @mem;
+	my $memtotal = (split(/\s+/, @mem[0]))[1];
+	my $memavail = (split(/\s+/, @mem[2]))[1];
+	my $swaptotal = (split(/\s+/, @mem[15]))[1];
+	my $swapfree = (split(/\s+/, @mem[16]))[1];
+
+	return sprintf(
+		" | mem: %s M | sw: %s M",
+		int($memavail / 1024),
+		int(($swaptotal - $swapfree) / 1024)
+	);
+}
 
