@@ -1,5 +1,5 @@
 #!/usr/bin/perl
-# vim: set ai noet ts=8 sw=8 sts=8 ft=perl :
+# vim: set ai noet ts=4 sw=4 sts=4 ft=perl :
 
 # set username
 # set uptime
@@ -21,6 +21,10 @@
 # main (fast) loop for window name, language, it looks like we have some room here for greater
 # improvement, when it'll be more clear how get info directly from x server
 
+#use strict;
+#use warnings "all";
+use Fcntl qw(:seek);
+
 binmode STDOUT;
 binmode STDERR;
 
@@ -28,11 +32,8 @@ sub onesec_cron();
 sub slow_cron();
 
 sub gettimestr();
-sub getfocusedwidowtitlestr();
-sub getlangstr();
 sub getuptimestr();
 sub getlastr();
-sub getbatterychargestr1();
 sub getbatterychargestr2();
 sub meminfo();
 
@@ -51,6 +52,10 @@ my $uptime;
 my $time;
 my $mem;
 
+my $UPTIMEHANDLE;
+my $LAHANDLE;
+my $MEMINFOHANDLE;
+
 sleep 1;
 
 while (1) {
@@ -64,10 +69,7 @@ while (1) {
 		$slow_timer = 0;
 	}
 
-	$str = '';
-#	$str .= getfocusedwidowtitlestr();
-#	$str .= "$ENV{'USER'}";
-	$str .= getlangstr();
+	my $str = '';
 	$str .= $uptime;
 	$str .= $la;
 	$str .= $mem;
@@ -108,86 +110,50 @@ sub gettimestr() {
 	return $str;
 }
 
-sub getfocusedwidowtitlestr() {
-	my $str;
-
-	if (-x '/usr/bin/xdotool') {
-		$str = `xdotool getactivewindow getwindowname`;
-	} elsif (-x '/usr/bin/xprop') {
-		$str = (split( / = /, `xprop -id \$(xprop -root _NET_ACTIVE_WINDOW | cut -d ' ' -f 5) _NET_WM_NAME`))[1];
-		chop $str; chop $str;
-	}
-
-	chomp($str);
-
-	if (length($str) != 0) {
-		if (length($str) > 64){
-			$str = '...' . substr($str, 0, -61);
-		}
-		$str = '['. $str .']    | ';
-	} else {
-		$str = '| ';
-	}
-
-	return $str;
-}
-
 sub getuptimestr() {
-	open UPTIME, "/proc/uptime" if (tell(UPTIME) == -1);
+	if (defined($UPTIMEHANDLE)) {
+		open $UPTIMEHANDLE, "/proc/uptime" if (tell($UPTIMEHANDLE) == -1);
+	} else {
+		open $UPTIMEHANDLE, "/proc/uptime"; 
+	}
 
-	$u = <UPTIME>;
-	seek UPTIME, SEEK_SET, 0;
+	my $u = <$UPTIMEHANDLE>;
+	seek $UPTIMEHANDLE, SEEK_SET, 0;
 	$u = (split(/ /, $u, 2))[0];
-	$days = int($u / 86400); # 86400 = 1 day
-	$hours = int(($u - (86400 * $days)) / 3600); # 3600 = 1 hour
-	$minutes = int(($u - (86400 * $days) - (3600 * $hours)) / 60);
-	$seconds = int($u - (86400 * $days) - (3600 * $hours) - (60 * $minutes));
+	my $days = int($u / 86400); # 86400 = 1 day
+	my $hours = int(($u - (86400 * $days)) / 3600); # 3600 = 1 hour
+	my $minutes = int(($u - (86400 * $days) - (3600 * $hours)) / 60);
+	my $seconds = int($u - (86400 * $days) - (3600 * $hours) - (60 * $minutes));
 	my $str = sprintf(" | up: %sd,%02sh,%02sm ", $days, $hours, $minutes);
 
 	return $str;
 }
 
 sub getlastr() {
-	open LA, "/proc/loadavg" if (tell(LA) == -1);
+	if (defined($LAHANDLE)) {
+		open $LAHANDLE, "/proc/loadavg" if (tell($LAHANDLE) == -1);
+	} else {
+		open $LAHANDLE, "/proc/loadavg";
+	}
 
-	my $la = <LA>;
-	seek LA, SEEK_SET, 0;
+	my $la = <$LAHANDLE>;
+	seek $LAHANDLE, SEEK_SET, 0;
 	$la = (split(/ /, $la, 2))[0];
 
 	return (" | LA: $la ");
 }
 
-sub getbatterychargestr1() {
-	my $str = '';
-
-	if (-f "/sys/class/power_supply/BAT0/present") {
-		open A, "/sys/class/power_supply/BAT0/present";
-		$P = <A>;
-		close A;
-		chomp($P);
-
-		if ($P eq '1') {
-			open A, "/sys/class/power_supply/BAT0/energy_full";
-			my $full_charge = <A>;
-			close A;
-			chomp($full_charge);
-
-			open A, "/sys/class/power_supply/BAT0/energy_now";
-			my $current_charge = <A>;
-			close A;
-			chomp($current_charge);
-
-			$str .= sprintf(" | Bat: %03d%% ", int(($current_charge / $full_charge) * 100) );
-			undef $current_charge; undef $full_charge;
-		}
-	}
-
-	return $str;
-}
-
 sub getbatterychargestr2() {
 	my $str .= " | Power: ";
-	open AC,"/sys/class/power_supply/ADP1/online";
+	my $acfile;
+
+	if ( -f "/sys/class/power_supply/ADP1/online") {
+		$acfile = "/sys/class/power_supply/ADP1/online";
+	} elsif ("/sys/class/power_supply/AC/online") {
+		$acfile = "/sys/class/power_supply/AC/online"
+	}
+
+	open AC, "<", $acfile;
 
 	if (<AC> == 1) {
 		$str .= "AC";
@@ -207,27 +173,20 @@ sub getbatterychargestr2() {
 	return $str;
 }
 
-sub getlangstr() {
-	my $str .= " | Lang: ";
-
-	if (`xset -q` =~ /Group 2:     on /o) {
-		$str .= "RU";
+sub meminfo() {
+	if (defined($MEMINFOHANDLE)) {
+		open ($MEMINFOHANDLE, "/proc/meminfo") if (tell($MEMINFOHANDLE) == -1);
 	} else {
-		$str .= "EN";
+		open ($MEMINFOHANDLE, "/proc/meminfo");
 	}
 
-	return $str;
-}
-
-sub meminfo() {
-	open (M, "/proc/meminfo");
-	my @mem = <M>;
-	close M;
+	my @mem = <$MEMINFOHANDLE>;
+	seek $MEMINFOHANDLE, SEEK_SET, 0;
 	@mem = map { substr($_, 0, -4) } @mem;
 
-	my $memavail = (split(/\s+/, @mem[2]))[1];
-	my $swaptotal = (split(/\s+/, @mem[15]))[1];
-	my $swapfree = (split(/\s+/, @mem[16]))[1];
+	my $memavail = (split(/\s+/, $mem[2]))[1];
+	my $swaptotal = (split(/\s+/, $mem[14]))[1];
+	my $swapfree = (split(/\s+/, $mem[15]))[1];
 
 	return sprintf (
 		" | mem: %s M | sw: %s M",
