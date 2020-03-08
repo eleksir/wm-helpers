@@ -1,41 +1,24 @@
 #!/usr/bin/perl
 # vim: set ai noet ts=4 sw=4 sts=4 ft=perl :
 
-# set username
-# set uptime
-# set time
-# set xtitle of focused window
-# set list of windows for current tag
-# set list of windows for all tags
-# set la
-# set current language
-# set battery charge
-
-# main loop impl. :
-# save cur. str and compare it with prev. if it differs - update
-
-# proposed: 3 types of loop:
-# slow loop for batt charge, la
-# 1 second loop for time, uptime - generally, it looks like we do not need poll every second
-#                                  timers if clock granularity set to 1 minute or even coarse
-# main (fast) loop for window name, language, it looks like we have some room here for greater
-# improvement, when it'll be more clear how get info directly from x server
-
-#use strict;
-#use warnings "all";
+use strict;
+use warnings "all";
 use Fcntl qw(:seek);
+use 5.10.0;
+use utf8;
 
 binmode STDOUT;
 binmode STDERR;
 
-sub onesec_cron();
-sub slow_cron();
-
 sub gettimestr();
-sub getuptimestr();
 sub getlastr();
 sub getbatterychargestr2();
 sub meminfo();
+sub ifaces();
+sub cpuspeed();
+sub cputemp();
+sub caps();
+sub caps_find();
 
 
 my $slow_timer = 360; # 0.333 * 360 ~= 2 min
@@ -48,36 +31,68 @@ my $pstr = '';
 
 my $charge;
 my $la;
-my $uptime;
 my $time;
 my $mem;
+my $net;
+my $cpuspeed;
+my $cputemp;
 
-my $UPTIMEHANDLE;
 my $LAHANDLE;
 my $MEMINFOHANDLE;
+my $CPUTEMPHANDLE;
+my %CPUSCALEHANDLE;
+my %CPUSCALEMAXHANDLE;
+my $ROUTEHANDLE;
+my %IFSTATEHANDLE;
+my $CAPSHANDLE;
+my $ACHANDLE;
+my $DCHANDLE;
+
+my $CAPSPATH;
+my @IFACE = qw (wlan0);
+my %IFSTATE;
+my %IFPSTATE;
+my %IFADDR;
+my $ACFILE;
+
+if ( -f "/sys/class/power_supply/ADP1/online") {
+	$ACFILE = "/sys/class/power_supply/ADP1/online";
+} elsif ("/sys/class/power_supply/AC/online") {
+	$ACFILE = "/sys/class/power_supply/AC/online";
+}
 
 sleep 1;
 
 while (1) {
 	if ($onesec_timer >= 3) {
-		onesec_cron();
+#		$cpuspeed = cpuspeed();
+		$cputemp = cputemp();
+		$time = gettimestr();
+# as we report time with precision of 1 minute, update 1/60 seconds
+		$mem = meminfo();
+		$net = ifaces();
 		$onesec_timer = 0;
 	}
 
 	if ($slow_timer >= 360) {
-		slow_cron();
+		$charge = getbatterychargestr2();
+		$la = getlastr();
+		$CAPSPATH = caps_find() unless (defined($CAPSPATH));
 		$slow_timer = 0;
 	}
 
-	my $str = '';
-	$str .= $uptime;
+#	my $str = $cpuspeed;
+	my $str = caps();
+	$str .= $net;
+	$str .= $cputemp;
 	$str .= $la;
 	$str .= $mem;
 	$str .= $charge;
 	$str .= $time;
+	utf8::encode($str);
 
 	if ($pstr ne $str) {
-		syswrite STDOUT, "$str\n";
+		say $str;
 		$pstr = $str;
 	}
 
@@ -89,19 +104,6 @@ while (1) {
 	select(undef, undef, undef, 0.333);
 }
 
-sub slow_cron() {
-	$charge = getbatterychargestr2();
-	$la = getlastr();
-}
-
-sub onesec_cron() {
-	$uptime = getuptimestr();
-	$time = gettimestr();
-# as we report time with precision of 1 minute, update 1/60 seconds
-	$mem = meminfo();
-}
-
-
 sub gettimestr() {
 	my ($sec, $min, $hour, $mday, $mon, $year, $wday) = (localtime)[0,1,2,3,4,5,6];
 	$year = $year + 1900;
@@ -110,33 +112,14 @@ sub gettimestr() {
 	return $str;
 }
 
-sub getuptimestr() {
-	if (defined($UPTIMEHANDLE)) {
-		open $UPTIMEHANDLE, "/proc/uptime" if (tell($UPTIMEHANDLE) == -1);
-	} else {
-		open $UPTIMEHANDLE, "/proc/uptime"; 
-	}
-
-	my $u = <$UPTIMEHANDLE>;
-	seek $UPTIMEHANDLE, SEEK_SET, 0;
-	$u = (split(/ /, $u, 2))[0];
-	my $days = int($u / 86400); # 86400 = 1 day
-	my $hours = int(($u - (86400 * $days)) / 3600); # 3600 = 1 hour
-	my $minutes = int(($u - (86400 * $days) - (3600 * $hours)) / 60);
-	my $seconds = int($u - (86400 * $days) - (3600 * $hours) - (60 * $minutes));
-	my $str = sprintf(" | up: %sd,%02sh,%02sm ", $days, $hours, $minutes);
-
-	return $str;
-}
-
 sub getlastr() {
 	if (defined($LAHANDLE)) {
-		open $LAHANDLE, "/proc/loadavg" if (tell($LAHANDLE) == -1);
+		open ($LAHANDLE, "/proc/loadavg") if (tell($LAHANDLE) == -1);
 	} else {
-		open $LAHANDLE, "/proc/loadavg";
+		open ($LAHANDLE, "/proc/loadavg");
 	}
 
-	my $la = <$LAHANDLE>;
+	my $la = readline($LAHANDLE);
 	seek $LAHANDLE, SEEK_SET, 0;
 	$la = (split(/ /, $la, 2))[0];
 
@@ -144,31 +127,32 @@ sub getlastr() {
 }
 
 sub getbatterychargestr2() {
-	my $str .= " | Power: ";
-	my $acfile;
+	my $str .= " | ⚡ ";
 
-	if ( -f "/sys/class/power_supply/ADP1/online") {
-		$acfile = "/sys/class/power_supply/ADP1/online";
-	} elsif ("/sys/class/power_supply/AC/online") {
-		$acfile = "/sys/class/power_supply/AC/online"
+	if (defined($ACHANDLE)) {
+		open ($ACHANDLE, $ACFILE) if (tell($ACHANDLE) == -1);
+	} else {
+		open ($ACHANDLE, $ACFILE);
 	}
 
-	open AC, "<", $acfile;
-
-	if (<AC> == 1) {
+	if (readline($ACHANDLE) == 1) {
 		$str .= "AC";
 	} else {
 		$str .= "DC";
 	}
 
-	close AC; # display % charge only if possible
+	seek $ACHANDLE, SEEK_SET, 0;
 
-	if (open DC,"/sys/class/power_supply/BAT0/capacity") {
-		$str .= ' '. <DC>;
-		close DC;
-		chomp $str;
-		$str .= '%';
+	if (defined($DCHANDLE)) {
+		open ($DCHANDLE, "/sys/class/power_supply/BAT0/capacity") if (tell($DCHANDLE) == -1);
+	} else {
+		open ($DCHANDLE, "/sys/class/power_supply/BAT0/capacity");
 	}
+
+	$str .= " " . readline($DCHANDLE);
+	chomp($str);
+	$str .= '%';
+	seek $DCHANDLE, SEEK_SET, 0;
 
 	return $str;
 }
@@ -180,17 +164,219 @@ sub meminfo() {
 		open ($MEMINFOHANDLE, "/proc/meminfo");
 	}
 
-	my @mem = <$MEMINFOHANDLE>;
+	my @mem;
+
+	while ( ! eof($MEMINFOHANDLE) ) {
+		push @mem, readline($MEMINFOHANDLE);
+	}
+
 	seek $MEMINFOHANDLE, SEEK_SET, 0;
 	@mem = map { substr($_, 0, -4) } @mem;
-
 	my $memavail = (split(/\s+/, $mem[2]))[1];
 	my $swaptotal = (split(/\s+/, $mem[14]))[1];
 	my $swapfree = (split(/\s+/, $mem[15]))[1];
 
 	return sprintf (
-		" | mem: %s M | sw: %s M",
+		" | mem/sw: %s/%s M",
 		int($memavail / 1024),
 		int(($swaptotal - $swapfree) / 1024)
 	);
+}
+
+sub ifaces() {
+	my $str = '';
+
+	foreach my $if (@IFACE) {
+		my $addr = "no addr";
+		my $link;
+
+		if (defined($IFSTATEHANDLE{$if})) {
+			if (tell($IFSTATEHANDLE{$if}) == -1) {
+				unless (open ($IFSTATEHANDLE{$if}, "/sys/class/net/$if/operstate")) {
+					$str .= " | ? $if: not exist";
+					next;
+				}
+			}
+		} else {
+			open ($IFSTATEHANDLE{$if}, "/sys/class/net/$if/operstate") or do {
+				$str .= " | ? $if: not exist";
+				next;
+			};
+		}
+
+		$IFSTATE{$if} = readline($IFSTATEHANDLE{$if});
+		seek $IFSTATEHANDLE{$if}, SEEK_SET, 0;
+		$IFPSTATE{$if} = $IFSTATE{$if} unless(defined($IFPSTATE{$if}));
+
+		if ($IFSTATE{$if} eq "up\n") {
+			$link = '▲';
+		} else {
+			$link = '▼';
+		}
+
+		if ($IFPSTATE{$if} ne $IFSTATE{$if}) {
+			$IFADDR{$if} = undef;
+			$IFPSTATE{$if} = $IFSTATE{$if}
+		}
+
+		unless (defined($IFADDR{$if})) {
+			if (defined($ROUTEHANDLE)) {
+				open ($ROUTEHANDLE, "/proc/self/net/route") if (tell($ROUTEHANDLE) == -1);
+			} else {
+				open ($ROUTEHANDLE, "/proc/self/net/route");
+			}
+
+			my @route;
+
+			while ( ! eof($ROUTEHANDLE)) {
+				push @route, readline($ROUTEHANDLE);
+			}
+
+			seek $ROUTEHANDLE, SEEK_SET, 0;
+
+			foreach my $r (@route) {
+				if ((split(/\t/, $r, 2))[0] eq $if) {
+					$addr = (split(/\n/, `/sbin/ip address show dev $if`))[2];
+					$addr =~ m/    inet (.+)\//;
+					$IFADDR{$if} = $1;
+
+					last;
+				}
+			}
+		}
+
+		unless (defined($IFADDR{$if})) {
+			$str .= sprintf(" | %s %s: %s", $link, $if, $addr);
+		} else {
+			$str .= sprintf(" | %s %s: %s", $link, $if, $IFADDR{$if});
+		}
+	}
+
+	return $str;
+}
+
+sub cpuspeed() {
+	my $str = 'cpu:';
+
+	opendir(C, "/sys/devices/system/cpu/cpufreq") or do {
+		return '';
+	};
+
+	while (readdir(C)) {
+		next if($_ eq '.');
+		next if($_ eq '..');
+
+		if (defined($CPUSCALEHANDLE{$_})) {
+			if (tell($CPUSCALEHANDLE{$_}) == -1) {
+				unless (open ($CPUSCALEHANDLE{$_}, "/sys/devices/system/cpu/cpufreq/$_/scaling_cur_freq")) {
+					return '';
+				}
+			}
+		} else {
+			open ($CPUSCALEHANDLE{$_}, "/sys/devices/system/cpu/cpufreq/$_/scaling_cur_freq") or do {
+				return '';
+			};
+		}
+
+		my $speed = readline($CPUSCALEHANDLE{$_});
+		seek $CPUSCALEHANDLE{$_}, SEEK_SET, 0;
+		chomp $speed;
+		$speed = int($speed / 1000);
+
+		if (defined($CPUSCALEMAXHANDLE{$_})) {
+			if (tell($CPUSCALEMAXHANDLE{$_}) == -1) {
+				unless (open ($CPUSCALEMAXHANDLE{$_}, "/sys/devices/system/cpu/cpufreq/$_/scaling_max_freq")) {
+					return '';
+				}
+			}
+		} else {
+			open ($CPUSCALEMAXHANDLE{$_}, "/sys/devices/system/cpu/cpufreq/$_/scaling_max_freq") or do {
+				return '';
+			};
+		}
+
+		my $speedmax = readline($CPUSCALEMAXHANDLE{$_});
+		seek $CPUSCALEHANDLE{$_}, SEEK_SET, 0;
+		chomp $speedmax;
+		$speedmax = int($speedmax / 1000);
+		$str .= sprintf(" %s/%s", $speed, $speedmax);
+	}
+
+	closedir C;
+
+	return $str . " MHz";
+}
+
+sub cputemp() {
+	if (defined($CPUTEMPHANDLE)) {
+		if (tell($CPUTEMPHANDLE) == -1) {
+			unless (open ($CPUTEMPHANDLE, "/sys/class/hwmon/hwmon0/temp1_input")) {
+				return '';
+			}
+		}
+	} else {
+		open ($CPUTEMPHANDLE, "/sys/class/hwmon/hwmon0/temp1_input") or do {
+			return '';
+		};
+	}
+
+	my $t = readline($CPUTEMPHANDLE);
+	seek $CPUTEMPHANDLE, SEEK_SET, 0;
+	chomp $t;
+	$t = int($t);
+	$t = int($t / 1000) if ($t > 1000);
+
+	return sprintf(" | %s°", $t);
+}
+
+sub caps() {
+	if (defined($CAPSPATH)) {
+		if (defined($CAPSHANDLE)) {
+			if (tell($CAPSHANDLE) == -1) {
+				unless (open($CAPSHANDLE, $CAPSPATH)) {
+					$CAPSPATH = undef;
+					return "? caps";
+				}
+			}
+		} else {
+			open($CAPSHANDLE, $CAPSPATH) or do {
+				$CAPSPATH = undef;
+				return "? caps";
+			};
+		}
+
+		my $state = readline($CAPSHANDLE);
+		seek $CAPSHANDLE, SEEK_SET, 0;
+		chomp $state;
+
+		if ($state eq '1') {
+			return '☒ caps';
+		} else {
+			return '☐ caps';
+		}
+	}
+}
+
+sub caps_find() {
+	my $str;
+	opendir (C, "/sys/class/input");
+	my $cnt = 0;
+
+	while (readdir(C)) {
+		if (-f sprintf("/sys/class/input/%s/input0::capslock/brightness", $_)) {
+			$str = sprintf("/sys/class/input/%s/input0::capslock/brightness", $_);
+			last;
+		}
+
+		if (-f sprintf("/sys/class/input/%s/input%s::capslock/brightness", $_, $cnt)) {
+			$str = sprintf("/sys/class/input/%s/input%s::capslock/brightness", $_, $cnt);
+			last;
+		}
+
+		$cnt++;
+	}
+
+	closedir C;
+
+	return $str;
 }
