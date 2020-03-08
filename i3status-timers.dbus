@@ -1,50 +1,27 @@
 #!/usr/bin/perl
-# vim: set ai noet ts=8 sw=8 sts=8 ft=perl :
-
-# set username
-# set uptime
-# set time
-# set xtitle of focused window
-# set list of windows for current tag
-# set list of windows for all tags
-# set la
-# set current language
-# set battery charge
-
-# main loop impl. :
-# save cur. str and compare it with prev. if it differs - update
-
-# proposed: 3 types of loop:
-# slow loop for batt charge, la
-# 1 second loop for time, uptime - generally, it looks like we do not need poll every second
-#                                  timers if clock granularity set to 1 minute or even coarse
-# main (fast) loop for window name, language, it looks like we have some room here for greater
-# improvement, when it'll be more clear how get info directly from x server
+# vim: set ai noet ts=4 sw=4 sts=4 ft=perl :
 
 use strict;
 use warnings "all";
 
 use Fcntl qw(:seek);
 use Net::DBus;
-
+use 5.10.0;
+use utf8;
 
 binmode STDOUT;
 binmode STDERR;
 
-sub onesec_cron();
-sub slow_cron();
-
 sub gettimestr();
-sub getfocusedwidowtitlestr();
-sub getlangstr();
-sub getuptimestr();
 sub getlastr();
-sub getbatterychargestr1();
-sub getbatterychargestr2();
 sub getbatterychargestr3();
+sub to_hours($);
 sub meminfo();
-sub to_hours($); # translates seconds to HH:MM format
-
+sub ifaces();
+sub cpuspeed();
+sub cputemp();
+sub caps();
+sub caps_find();
 
 my $slow_timer = 360; # 0.333 * 360 ~= 2 min
 my $onesec_timer = 3; # 0.333 * 3   ~= 1 sec
@@ -56,43 +33,60 @@ my $pstr = '';
 
 my $charge;
 my $la;
-my $uptime;
 my $time;
 my $mem;
+my $net;
+my $cpuspeed;
+my $cputemp;
 
+# prep dee-boos connection
 my $bus = Net::DBus->system;
 my $upower = $bus->get_service("org.freedesktop.UPower");
 my $properties = $upower->get_object("/org/freedesktop/UPower/devices/battery_BAT0", "org.freedesktop.DBus.Properties");
 
-my $UPTIMEHANDLE;
+# find out caps lock indicator
+my $CAPSPATH = &caps_find();
+
 my $LAHANDLE;
 my $MEMINFOHANDLE;
 
+my @IFACE = qw (wlan0);
+my %IFSTATE;
+my %IFPSTATE;
+my %IFADDR;
+
+# take a nap
 sleep 1;
 
 while (1) {
 	if ($onesec_timer >= 3) {
-		onesec_cron();
+#		$cpuspeed = cpuspeed();
+		$cputemp = cputemp();
+		$time = gettimestr();
+		$mem = &meminfo();
+		$net = &ifaces();
 		$onesec_timer = 0;
 	}
 
 	if ($slow_timer >= 360) {
-		slow_cron();
+		$charge = getbatterychargestr3();
+		$la = getlastr();
+		$CAPSPATH = caps_find() unless (defined($CAPSPATH));
 		$slow_timer = 0;
 	}
 
-	my $str = '';
-#	$str .= getfocusedwidowtitlestr();
-#	$str .= "$ENV{'USER'}";
-	$str .= getlangstr();
-	$str .= $uptime;
+#	my $str = $cpuspeed;
+	my $str = caps();
+	$str .= $net;
+	$str .= $cputemp;
 	$str .= $la;
 	$str .= $mem;
 	$str .= $charge;
 	$str .= $time;
+	utf8::encode($str);
 
 	if ($pstr ne $str) {
-		syswrite STDOUT, "$str\n";
+		syswrite STDOUT, $str . "\n";
 		$pstr = $str;
 	}
 
@@ -104,68 +98,11 @@ while (1) {
 	select(undef, undef, undef, 0.333);
 }
 
-sub slow_cron() {
-	$charge = getbatterychargestr3();
-	$la = getlastr();
-}
-
-sub onesec_cron() {
-	$uptime = getuptimestr();
-	$time = gettimestr();
-# as we report time with precision of 1 minute, update 1/60 seconds
-	$mem = meminfo();
-}
-
-
 sub gettimestr() {
 	my ($sec, $min, $hour, $mday, $mon, $year, $wday) = (localtime)[0,1,2,3,4,5,6];
 	$year = $year + 1900;
-	my $str .= sprintf(" |     %s, %s %s %s  %02s:%02s  ", $wdays[$wday], $mday, $months[$mon], $year, $hour, $min);
 
-	return $str;
-}
-
-sub getfocusedwidowtitlestr() {
-	my $str;
-
-	if (-x '/usr/bin/xdotool') {
-		$str = `xdotool getactivewindow getwindowname`;
-	} elsif (-x '/usr/bin/xprop') {
-		$str = (split( / = /, `xprop -id \$(xprop -root _NET_ACTIVE_WINDOW | cut -d ' ' -f 5) _NET_WM_NAME`))[1];
-		chop $str; chop $str;
-	}
-
-	chomp($str);
-
-	if (length($str) != 0) {
-		if (length($str) > 64){
-			$str = '...' . substr($str, 0, -61);
-		}
-		$str = '['. $str .']    | ';
-	} else {
-		$str = '| ';
-	}
-
-	return $str;
-}
-
-sub getuptimestr() {
-	if (defined($UPTIMEHANDLE)) {
-		open $UPTIMEHANDLE, "/proc/uptime" if (tell($UPTIMEHANDLE) == -1);
-	} else {
-		open $UPTIMEHANDLE, "/proc/uptime";
-	}
-
-	my $u = <$UPTIMEHANDLE>;
-	seek $UPTIMEHANDLE, SEEK_SET, 0;
-	$u = (split(/ /, $u, 2))[0];
-	my $days = int($u / 86400); # 86400 = 1 day
-	my $hours = int(($u - (86400 * $days)) / 3600); # 3600 = 1 hour
-	my $minutes = int(($u - (86400 * $days) - (3600 * $hours)) / 60);
-	my $seconds = int($u - (86400 * $days) - (3600 * $hours) - (60 * $minutes));
-	my $str = sprintf(" | up: %sd,%02sh,%02sm ", $days, $hours, $minutes);
-
-	return $str;
+	return sprintf(" |     %s, %s %s %s  %02s:%02s  ", $wdays[$wday], $mday, $months[$mon], $year, $hour, $min);
 }
 
 sub getlastr() {
@@ -175,61 +112,11 @@ sub getlastr() {
 		open $LAHANDLE, "/proc/loadavg";
 	}
 
-	my $la = <$LAHANDLE>;
+	my $str = readline($LAHANDLE);
 	seek $LAHANDLE, SEEK_SET, 0;
-	$la = (split(/ /, $la, 2))[0];
+	$str = (split(/ /, $str, 2))[0];
 
-	return (" | LA: $la ");
-}
-
-sub getbatterychargestr1() {
-	my $str = '';
-
-	if (-f "/sys/class/power_supply/BAT0/present") {
-		open A, "/sys/class/power_supply/BAT0/present";
-		my $P = <A>;
-		close A;
-		chomp($P);
-
-		if ($P eq '1') {
-			open A, "/sys/class/power_supply/BAT0/energy_full";
-			my $full_charge = <A>;
-			close A;
-			chomp($full_charge);
-
-			open A, "/sys/class/power_supply/BAT0/energy_now";
-			my $current_charge = <A>;
-			close A;
-			chomp($current_charge);
-
-			$str .= sprintf(" | Bat: %03d%% ", int(($current_charge / $full_charge) * 100) );
-			undef $current_charge; undef $full_charge;
-		}
-	}
-
-	return $str;
-}
-
-sub getbatterychargestr2() {
-	my $str .= " | Power: ";
-	open AC,"/sys/class/power_supply/ADP1/online";
-
-	if (<AC> == 1) {
-		$str .= "AC";
-	} else {
-		$str .= "DC";
-	}
-
-	close AC; # display % charge only if possible
-
-	if (open DC,"/sys/class/power_supply/BAT0/capacity") {
-		$str .= ' '. <DC>;
-		close DC;
-		chomp $str;
-		$str .= '%';
-	}
-
-	return $str;
+	return " | LA: $str";
 }
 
 sub getbatterychargestr3() {
@@ -252,51 +139,183 @@ sub getbatterychargestr3() {
 		$state = '•';
 	}
 
-	$time = to_hours ($time);
+	$time = to_hours ($time) unless ($time eq '?');
 
-	return  sprintf(" | %s%% %s %s", $capacity, $state, $time);
+	return sprintf(" | ⚡ %s%% %s %s", $capacity, $state, $time);
 }
 
-sub getlangstr() {
-	my $str .= " | Lang: ";
+sub to_hours ($) {
+	my $sec = shift;
 
-	if (`xset -q` =~ /Group 2:     on /o) {
-		$str .= "RU";
-	} else {
-		$str .= "EN";
-	}
+	my $hrs = $sec / (60 * 60);
+	$hrs = 0 if ( $hrs < 1 );
+	my $min = ($sec - ($hrs * 60 * 60)) / 60;
+	$min = 0 if ( $min < 1 );
 
-	return $str;
+	return sprintf("%02d:%02d", $hrs, $min);
 }
 
 sub meminfo() {
 	if (defined($MEMINFOHANDLE)) {
 		open ($MEMINFOHANDLE, "/proc/meminfo") if (tell($MEMINFOHANDLE) == -1);
 	} else {
-		open ($MEMINFOHANDLE, "/proc/meminfo"); 
+		open ($MEMINFOHANDLE, "/proc/meminfo");
 	}
 
-	my @mem = <$MEMINFOHANDLE>;
+	my @mem;
+
+	while ( ! eof($MEMINFOHANDLE) ) {
+		push @mem, readline($MEMINFOHANDLE);
+	}
+
 	seek $MEMINFOHANDLE, SEEK_SET, 0;
-
 	@mem = map { substr($_, 0, -4) } @mem;
-
 	my $memavail = (split(/\s+/, $mem[2]))[1];
 	my $swaptotal = (split(/\s+/, $mem[14]))[1];
 	my $swapfree = (split(/\s+/, $mem[15]))[1];
 
 	return sprintf (
-		" | mem: %s M | sw: %s M",
+		" | mem/sw: %s/%s M",
 		int($memavail / 1024),
 		int(($swaptotal - $swapfree) / 1024)
 	);
 }
 
-sub to_hours ($) {
-	my $sec = shift;
-	my $hrs = $sec / (60 * 60);
-	$hrs = 0 if ( $hrs < 1 );
-	my $min = ($sec - ($hrs * 60 * 60)) / 60;
-	$min = 0 if ( $min < 1 );
-	return sprintf("%02d:%02d", $hrs, $min);
+sub ifaces() {
+	my $str = '';
+
+	foreach my $if (@IFACE) {
+		my $addr = "no addr";
+		my $link;
+
+		open (I, "/sys/class/net/$if/operstate") or do {
+			$str .= " | ? $if: not exist";
+			next;
+		};
+
+		$IFSTATE{$if} = readline(*I);
+		close I;
+		$IFPSTATE{$if} = $IFSTATE{$if} unless(defined($IFPSTATE{$if}));
+
+		if ($IFSTATE{$if} eq "up\n") {
+			$link = '▲';
+		} else {
+			$link = '▼';
+		}
+
+		if ($IFPSTATE{$if} ne $IFSTATE{$if}) {
+			$IFADDR{$if} = undef;
+			$IFPSTATE{$if} = $IFSTATE{$if}
+		}
+
+		unless (defined($IFADDR{$if})) {
+			open(R, "/proc/self/net/route");
+			my @route = <R>;
+			close R;
+
+			foreach my $r (@route) {
+				if ((split(/\t/, $r, 2))[0] eq $if) {
+					$addr = (split(/\n/, `/sbin/ip address show dev $if`))[2];
+					$addr =~ m/    inet (.+)\//;
+					$IFADDR{$if} = $1;
+
+					last;
+				}
+			}
+		}
+
+		unless (defined($IFADDR{$if})) {
+			$str .= sprintf(" | %s %s: %s", $link, $if, $addr);
+		} else {
+			$str .= sprintf(" | %s %s: %s", $link, $if, $IFADDR{$if});
+		}
+	}
+
+	return $str;
+}
+
+sub cpuspeed() {
+	my $str = 'cpu:';
+
+	opendir(C, "/sys/devices/system/cpu/cpufreq") or do {
+		return '';
+	};
+
+	while (readdir(C)) {
+		next if($_ eq '.');
+		next if($_ eq '..');
+
+		open (S, "/sys/devices/system/cpu/cpufreq/$_/scaling_cur_freq") or do { next; };
+		my $speed = readline(*S);
+		close S;
+		chomp $speed;
+		$speed = int($speed / 1000);
+		open (SM, "/sys/devices/system/cpu/cpufreq/$_/scaling_max_freq");
+		my $speedmax = readline(*SM);
+		close SM;
+		chomp $speedmax;
+		$speedmax = int($speedmax / 1000);
+		$str .= sprintf(" %s/%s", $speed, $speedmax);
+	}
+
+	closedir C;
+
+	return $str . " MHz";
+}
+
+sub cputemp() {
+	open(T, "/sys/class/hwmon/hwmon0/temp1_input") or do {
+		return '';
+	};
+
+	my $t = readline(*T);
+	close T;
+	chomp $t;
+	$t = int($t);
+	$t = int($t / 1000) if ($t > 1000);
+
+	return sprintf(" | %s°", $t);
+}
+
+sub caps() {
+	if (defined($CAPSPATH)) {
+		open(C, $CAPSPATH) or do {
+			$CAPSPATH = undef;
+			return "? caps";
+		};
+
+		my $state = readline(*C);
+		close C;
+		chomp $state;
+
+		if ($state eq '1') {
+			return '☒ caps';
+		} else {
+			return '☐ caps';
+		}
+	}
+}
+
+sub caps_find() {
+	my $str;
+	opendir (C, "/sys/class/input");
+	my $cnt = 0;
+
+	while (readdir(C)) {
+		if (-f sprintf("/sys/class/input/%s/input0::capslock/brightness", $_)) {
+			$str = sprintf("/sys/class/input/%s/input0::capslock/brightness", $_);
+			last;
+		}
+
+		if (-f sprintf("/sys/class/input/%s/input%s::capslock/brightness", $_, $cnt)) {
+			$str = sprintf("/sys/class/input/%s/input%s::capslock/brightness", $_, $cnt);
+			last;
+		}
+
+		$cnt++;
+	}
+
+	closedir C;
+
+	return $str;
 }
