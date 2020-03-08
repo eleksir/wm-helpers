@@ -1,4 +1,10 @@
 #!/usr/bin/perl
+# 
+# TODO: check intel' backlight path too if generic is not found
+# this script should have suid bit set and must have root owner :(
+
+use strict;
+use warnings "all";
 
 my $arg = $ARGV[0];
 my $step = 10; # measured in percents
@@ -6,12 +12,15 @@ my $step = 10; # measured in percents
 sub fsread($);  # read 1-st line from file
 sub fswrite(@); # write string to file
 
-my $brightnessfile = "/sys/class/backlight/acpi_video0/brightness";
-my $maxbrightness = fsread("/sys/class/backlight/acpi_video0/max_brightness");
-my $currbrightness = fsread($brightnessfile);
+#my $prefix = "/sys/class/backlight/acpi_video0";
+my $prefix = "/sys/class/backlight/intel_backlight";
 
-my $a = $maxbrightness / 100;
-$step = int($step * $a);
+my $brightnessfile = "$prefix/brightness";
+my $maxbrightness = fsread("$prefix/max_brightness");
+my $currbrightness = fsread("$prefix/brightness");
+
+my $p = $maxbrightness / 100;
+$step = int($step * $p);
 
 if ( $arg eq "up" ) {
 	if ($currbrightness != $maxbrightness) {
@@ -38,7 +47,7 @@ if ( $arg eq "up" ) {
 
 sub fsread($) {
 	my $fname = shift;
-	open (F, $fname) || die;
+	open (F, $fname) || die "Unable to read $fname: $!\n";
 	my $str = <F>;
 	close F;
 	return $str;
@@ -47,7 +56,7 @@ sub fsread($) {
 sub fswrite (@) {
 	my $str = shift;
 	my $fname = shift;
-	open(OF, ">", $fname) || die;
+	open(OF, ">", $fname) || die "Unable to write $fname: $!\n";
 	print OF $str;
 	close OF;
 }
