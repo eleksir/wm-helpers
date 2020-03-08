@@ -1,6 +1,8 @@
 #!/usr/bin/perl
 # vim: set ai noet ts=4 sw=4 sts=4 ft=perl :
 
+# TODO: check for file descriptor leak for used fd munching technique
+
 use strict;
 use warnings "all";
 
@@ -49,6 +51,12 @@ my $CAPSPATH = &caps_find();
 
 my $LAHANDLE;
 my $MEMINFOHANDLE;
+my $CPUTEMPHANDLE;
+my %CPUSCALEHANDLE;
+my %CPUSCALEMAXHANDLE;
+my $ROUTEHANDLE;
+my %IFSTATEHANDLE;
+my $CAPSHANDLE;
 
 my @IFACE = qw (wlan0);
 my %IFSTATE;
@@ -63,8 +71,8 @@ while (1) {
 #		$cpuspeed = cpuspeed();
 		$cputemp = cputemp();
 		$time = gettimestr();
-		$mem = &meminfo();
-		$net = &ifaces();
+		$mem = meminfo();
+		$net = ifaces();
 		$onesec_timer = 0;
 	}
 
@@ -188,13 +196,22 @@ sub ifaces() {
 		my $addr = "no addr";
 		my $link;
 
-		open (I, "/sys/class/net/$if/operstate") or do {
-			$str .= " | ? $if: not exist";
-			next;
-		};
+		if (defined($IFSTATEHANDLE{$if})) {
+			if (tell($IFSTATEHANDLE{$if}) == -1) {
+				unless (open ($IFSTATEHANDLE{$if}, "/sys/class/net/$if/operstate")) {
+					$str .= " | ? $if: not exist";
+					next;
+				}
+			}
+		} else {
+			open ($IFSTATEHANDLE{$if}, "/sys/class/net/$if/operstate") or do {
+				$str .= " | ? $if: not exist";
+				next;
+			};
+		}
 
-		$IFSTATE{$if} = readline(*I);
-		close I;
+		$IFSTATE{$if} = readline($IFSTATEHANDLE{$if});
+		seek $IFSTATEHANDLE{$if}, SEEK_SET, 0;
 		$IFPSTATE{$if} = $IFSTATE{$if} unless(defined($IFPSTATE{$if}));
 
 		if ($IFSTATE{$if} eq "up\n") {
@@ -209,9 +226,19 @@ sub ifaces() {
 		}
 
 		unless (defined($IFADDR{$if})) {
-			open(R, "/proc/self/net/route");
-			my @route = <R>;
-			close R;
+			if (defined($ROUTEHANDLE)) {
+				open ($ROUTEHANDLE, "/proc/self/net/route") if (tell($ROUTEHANDLE) == -1);
+			} else {
+				open ($ROUTEHANDLE, "/proc/self/net/route");
+			}
+
+			my @route;
+
+			while ( ! eof($ROUTEHANDLE)) {
+				push @route, readline($ROUTEHANDLE);
+			}
+
+			seek $ROUTEHANDLE, SEEK_SET, 0;
 
 			foreach my $r (@route) {
 				if ((split(/\t/, $r, 2))[0] eq $if) {
@@ -245,14 +272,37 @@ sub cpuspeed() {
 		next if($_ eq '.');
 		next if($_ eq '..');
 
-		open (S, "/sys/devices/system/cpu/cpufreq/$_/scaling_cur_freq") or do { next; };
-		my $speed = readline(*S);
-		close S;
+		if (defined($CPUSCALEHANDLE{$_})) {
+			if (tell($CPUSCALEHANDLE{$_}) == -1) {
+				unless (open ($CPUSCALEHANDLE{$_}, "/sys/devices/system/cpu/cpufreq/$_/scaling_cur_freq")) {
+					return '';
+				}
+			}
+		} else {
+			open ($CPUSCALEHANDLE{$_}, "/sys/devices/system/cpu/cpufreq/$_/scaling_cur_freq") or do {
+				return '';
+			};
+		}
+
+		my $speed = readline($CPUSCALEHANDLE{$_});
+		seek $CPUSCALEHANDLE{$_}, SEEK_SET, 0;
 		chomp $speed;
 		$speed = int($speed / 1000);
-		open (SM, "/sys/devices/system/cpu/cpufreq/$_/scaling_max_freq");
-		my $speedmax = readline(*SM);
-		close SM;
+
+		if (defined($CPUSCALEMAXHANDLE{$_})) {
+			if (tell($CPUSCALEMAXHANDLE{$_}) == -1) {
+				unless (open ($CPUSCALEMAXHANDLE{$_}, "/sys/devices/system/cpu/cpufreq/$_/scaling_max_freq")) {
+					return '';
+				}
+			}
+		} else {
+			open ($CPUSCALEMAXHANDLE{$_}, "/sys/devices/system/cpu/cpufreq/$_/scaling_max_freq") or do {
+				return '';
+			};
+		}
+
+		my $speedmax = readline($CPUSCALEMAXHANDLE{$_});
+		seek $CPUSCALEHANDLE{$_}, SEEK_SET, 0;
 		chomp $speedmax;
 		$speedmax = int($speedmax / 1000);
 		$str .= sprintf(" %s/%s", $speed, $speedmax);
@@ -264,12 +314,20 @@ sub cpuspeed() {
 }
 
 sub cputemp() {
-	open(T, "/sys/class/hwmon/hwmon0/temp1_input") or do {
-		return '';
-	};
+	if (defined($CPUTEMPHANDLE)) {
+		if (tell($CPUTEMPHANDLE) == -1) {
+			unless (open ($CPUTEMPHANDLE, "/sys/class/hwmon/hwmon0/temp1_input")) {
+				return '';
+			}
+		}
+	} else {
+		open ($CPUTEMPHANDLE, "/sys/class/hwmon/hwmon0/temp1_input") or do {
+			return '';
+		};
+	}
 
-	my $t = readline(*T);
-	close T;
+	my $t = readline($CPUTEMPHANDLE);
+	seek $CPUTEMPHANDLE, SEEK_SET, 0;
 	chomp $t;
 	$t = int($t);
 	$t = int($t / 1000) if ($t > 1000);
@@ -279,13 +337,22 @@ sub cputemp() {
 
 sub caps() {
 	if (defined($CAPSPATH)) {
-		open(C, $CAPSPATH) or do {
-			$CAPSPATH = undef;
-			return "? caps";
-		};
+		if (defined($CAPSHANDLE)) {
+			if (tell($CAPSHANDLE) == -1) {
+				unless (open($CAPSHANDLE, $CAPSPATH)) {
+					$CAPSPATH = undef;
+					return "? caps";
+				}
+			}
+		} else {
+			open($CAPSHANDLE, $CAPSPATH) or do {
+				$CAPSPATH = undef;
+				return "? caps";
+			};
+		}
 
-		my $state = readline(*C);
-		close C;
+		my $state = readline($CAPSHANDLE);
+		seek $CAPSHANDLE, SEEK_SET, 0;
 		chomp $state;
 
 		if ($state eq '1') {
