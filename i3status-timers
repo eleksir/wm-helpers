@@ -81,8 +81,8 @@ while (1) {
 		$slow_timer = 0;
 	}
 
+#	my $str = $cpuspeed;
 	my $str = caps();
-#	$str .= $cpuspeed;
 	$str .= $net;
 	$str .= $cputemp;
 	$str .= $la;
@@ -107,8 +107,9 @@ while (1) {
 sub gettimestr() {
 	my ($sec, $min, $hour, $mday, $mon, $year, $wday) = (localtime)[0,1,2,3,4,5,6];
 	$year = $year + 1900;
+	my $str .= sprintf(" |     %s, %s %s %s  %02s:%02s  ", $wdays[$wday], $mday, $months[$mon], $year, $hour, $min);
 
-	return  sprintf(" |     %s, %s %s %s  %02s:%02s  ", $wdays[$wday], $mday, $months[$mon], $year, $hour, $min);
+	return $str;
 }
 
 sub getlastr() {
@@ -122,7 +123,7 @@ sub getlastr() {
 	seek $LAHANDLE, SEEK_SET, 0;
 	$la = (split(/ /, $la, 2))[0];
 
-	return " | LA: $la ";
+	return (" | LA: $la ");
 }
 
 sub getbatterychargestr2() {
@@ -255,7 +256,7 @@ sub ifaces() {
 }
 
 sub cpuspeed() {
-	my $str = '| cpu:';
+	my $str = 'cpu:';
 
 	opendir(C, "/sys/devices/system/cpu/cpufreq") or do {
 		return '';

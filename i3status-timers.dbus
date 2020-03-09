@@ -83,8 +83,8 @@ while (1) {
 		$slow_timer = 0;
 	}
 
+#	my $str = $cpuspeed;
 	my $str = caps();
-#	$str .= $cpuspeed;
 	$str .= $net;
 	$str .= $cputemp;
 	$str .= $la;
@@ -262,7 +262,7 @@ sub ifaces() {
 }
 
 sub cpuspeed() {
-	my $str = ' | cpu:';
+	my $str = 'cpu:';
 
 	opendir(C, "/sys/devices/system/cpu/cpufreq") or do {
 		return '';
