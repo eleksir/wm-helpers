@@ -8,12 +8,13 @@ use 5.10.0;
 use utf8;
 use JSON::XS;
 use threads;
-use Data::Dumper;
+#use Data::Dumper;
 
 binmode STDOUT;
 binmode STDERR;
 
 sub input_thread();
+sub readconf();
 sub gettimestr();
 sub getlastr();
 sub getbatterychargestr2();
@@ -32,6 +33,10 @@ $SIG{"STOP"} = sub { $read = 0 };
 
 my $slow_timer = 360; # 0.333 * 360 ~= 2 min
 my $onesec_timer = 3; # 0.333 * 3   ~= 1 sec
+
+# read config
+my ($C, %CMD) = readconf();
+my $buttonsamount = @{$C};
 
 my @months = ('Янв', 'Фев', 'Мар', 'Апр', 'Май', 'Июн', 'Июл', 'Авг', 'Сен', 'Окт', 'Ноя', 'Дек');
 my @wdays = ('Вс', 'Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб');
@@ -88,6 +93,9 @@ syswrite STDOUT, '{"version": 1, "stop_signal": 10, "cont_signal": 12, "click_ev
 ';
 
 while (1) {
+	# json message that will be spewed to i3bar
+	my $je;
+
 	if ($onesec_timer >= 3) {
 #		$cpuspeed = cpuspeed();
 
@@ -156,57 +164,11 @@ while (1) {
 		$jo->[6]->{full_text} = $caps;
 		$jo->[6]->{color} = '#3e78fd';
 
-		$jo->[7]->{full_text} = "mousepad";
-		$jo->[7]->{color} = '#ff0000';
-		$jo->[7]->{name} = 'mousepad';
-		$jo->[7]->{instance} = 'mousepad';
-		$jo->[7]->{align} = 'left';
+		@{$je} = (@{$jo}, @{$C});
 
-		$jo->[8]->{full_text} = "vsc";
-		$jo->[8]->{color} = '#ff0000';
-		$jo->[8]->{name} = 'code';
-		$jo->[8]->{instance} = 'code';
-		$jo->[8]->{align} = 'left';
+		@{$je} = reverse(@{$je});
 
-		$jo->[9]->{full_text} = "v";
-		$jo->[9]->{color} = '#ff0000';
-		$jo->[9]->{name} = 'vivaldi';
-		$jo->[9]->{instance} = 'vivaldi';
-		$jo->[9]->{align} = 'left';
-
-		$jo->[10]->{full_text} = "o";
-		$jo->[10]->{color} = '#ff0000';
-		$jo->[10]->{name} = 'opera';
-		$jo->[10]->{instance} = 'opera';
-		$jo->[10]->{align} = 'left';
-
-		$jo->[11]->{full_text} = "ff";
-		$jo->[11]->{color} = '#ff0000';
-		$jo->[11]->{name} = 'firefox';
-		$jo->[11]->{instance} = 'firefox';
-		$jo->[11]->{align} = 'left';
-
-		$jo->[12]->{full_text} = "sl";
-		$jo->[12]->{color} = '#ff0000';
-		$jo->[12]->{name} = 'slack';
-		$jo->[12]->{instance} = 'slack';
-		$jo->[13]->{align} = 'left';
-
-		$jo->[13]->{full_text} = "t";
-		$jo->[13]->{color} = '#ff0000';
-		$jo->[13]->{name} = 'Telegram';
-		$jo->[13]->{instance} = 'Telegram';
-		$jo->[13]->{align} = 'left';
-
-		$jo->[14]->{full_text} = "icq";
-		$jo->[14]->{color} = '#ff0000';
-		$jo->[14]->{name} = 'icq';
-		$jo->[14]->{instance} = 'icq';
-		$jo->[14]->{align} = 'left';
-
-		@{$jo} = reverse(@{$jo});
-
-		syswrite STDOUT, encode_json($jo) . ",\n";
+		syswrite STDOUT, encode_json($je) . ",\n";
 		$jf = 0;
 	}
 # tick timers
@@ -215,6 +177,29 @@ while (1) {
 
 # sleep for 0.333 second;
 	select(undef, undef, undef, 0.333);
+}
+
+sub readconf() {
+	open (CONF, "$ENV{HOME}/.i3/config.json") or die "Unable to open $ENV{HOME}/.i3/config.json: $!\n";
+	my $sep = $/;
+	$/ = '';
+	my $c = readline(*CONF);
+	close CONF;
+	$/ = $sep;
+	$c = decode_json($c) or die "Unable to decode $ENV{HOME}/.i3/config.json: $!\n";
+	my ($j, %cmd);
+	my $cnt = 0;
+
+	foreach (@{$c}) {
+		$j->[$cnt]->{full_text} = $_->{full_text} // 'no fucken name';
+		$j->[$cnt]->{name} =      $_->{name}      // $_->{full_text};
+		$j->[$cnt]->{instance} =  $_->{instance}  // $_->{full_text};
+		$j->[$cnt]->{color} =     $_->{color}     // '#00aa33';
+		$cmd{$_->{name}} =        $_->{cmd}       // '/usr/bin/true';
+		$cnt++
+	}
+
+	return ($j, %cmd);
 }
 
 sub input_thread() {
@@ -226,16 +211,13 @@ sub input_thread() {
 	readline(*STDIN); # throw away leading "[\n"
 
 	while (1) {
+		next if (eof(STDIN));
 		my $msg = readline(*STDIN);
 		$msg = substr($msg, 1, -1) if (substr($msg, 0, 1) eq ','); # drop leading ',' if present
 		my $j = decode_json($msg);
 
-		if ($j->{name} eq 'mousepad') {
-			spawn('mousepad');
-		}
-
-		if ($j->{name} eq 'ff') {
-			spawn(['firefox']);
+		if (defined($CMD{$j->{name}})) {
+			spawn($CMD{$j->{name}});
 		}
 	}
 }
@@ -537,6 +519,6 @@ sub spawn (@) {
 			exec $prg;
 		}
 	} else { # Unable to fork
-		die "ERROR: Could not fork new process: $!\n\n";
+		die "ERROR: Could not fork new process: $!\n";
 	}
 }

@@ -1,0 +1,72 @@
+	[
+		{
+			"full_text" : "u",
+			"name" : "urxvt",
+			"cmd" : "urxvtc"
+		},
+		{
+			"full_text" : "l",
+			"name" : "lxterm",
+			"cmd" : "lxterminal"
+		},
+		{
+			"full_text" : "f",
+			"name" : "firefox",
+			"cmd" : "firefox"
+		},
+		{
+			"full_text" : "v",
+			"name" : "vivaldi",
+			"cmd" : "vivaldi"
+		},
+		{
+			"full_text" : "c",
+			"name" : "chromium",
+			"cmd" : "chromium"
+		},
+		{
+			"full_text" : "o",
+			"name" : "opera",
+			"cmd" : "opera"
+		},
+		{
+			"full_text" : "t",
+			"name" : "thunderbird",
+			"cmd" : "thunderbird"
+		},
+		{
+			"full_text" : "t",
+			"name" : "telegram",
+			"cmd" : "Telegram"
+		},
+		{
+			"full_text" : "i",
+			"name" : "icq",
+			"cmd" : "icq"
+		},
+		{
+			"full_text" : "s",
+			"name" : "slack",
+			"cmd" : "slack"
+		},
+		{
+			"full_text" : "z",
+			"name" : "zim",
+			"cmd" : "zim"
+		},
+		{
+			"full_text" : "m",
+			"name" : "mousepad",
+			"cmd" : "mousepad"
+		},
+		{
+			"full_text" : "c",
+			"name" : "code",
+			"cmd" : "code"
+		},
+		{
+			"full_text" : "k",
+			"name" : "keepassxc",
+			"cmd" : "keepassxc"
+		}
+	]
