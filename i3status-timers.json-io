@@ -508,9 +508,10 @@ sub spawn (@) {
 		return;
 	} elsif ($pid == 0) { # Child
 # we need no io streams here, right?
-		close STDOUT;
-		close STDERR;
-		close STDIN;
+# it seems that at least vscode creashes if we close stdio handles
+		open(STDOUT, ">", "/dev/null");
+		open(STDERR, ">", "/dev/null");
+		open(STDIN,  "<", "/dev/null");
 		my $prg = shift(@args);
 # weird situation, silently quit here :)
 		exit 0 unless(defined($prg));
@@ -521,6 +522,6 @@ sub spawn (@) {
 			exec $prg;
 		}
 	} else { # Unable to fork()
-		warn "ERROR: Could not fork new process: $!\n";
+		syswrite STDERR, "[{\"full_text\":\"ERROR: Could not fork new process: $!\",\"color\":\"#ff0000\"}],\n";
 	}
 }
