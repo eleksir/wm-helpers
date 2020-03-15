@@ -8,7 +8,6 @@ use 5.10.0;
 use utf8;
 use JSON::XS;
 use threads;
-#use Data::Dumper;
 
 binmode STDOUT;
 binmode STDERR;
@@ -165,10 +164,12 @@ while (1) {
 		$jo->[6]->{color} = '#3e78fd';
 
 		@{$je} = (@{$jo}, @{$C});
-
 		@{$je} = reverse(@{$je});
 
-		syswrite STDOUT, encode_json($je) . ",\n";
+		if (my $output = encode_json($je)) {
+			syswrite STDOUT, encode_json($je) . ",\n";
+		}
+
 		$jf = 0;
 	}
 # tick timers
@@ -501,24 +502,25 @@ sub caps_find() {
 
 sub spawn (@) {
 	my @args = @_;
-
-	# fork, detach, exec
 	my  $pid = fork();
 
 	if ($pid) { # Parent
-		1;
+		return;
 	} elsif ($pid == 0) { # Child
+# we need no io streams here, right?
 		close STDOUT;
 		close STDERR;
 		close STDIN;
 		my $prg = shift(@args);
+# weird situation, silently quit here :)
+		exit 0 unless(defined($prg));
 
 		if (@args > 0) {
 			exec $prg @args;
 		} else {
 			exec $prg;
 		}
-	} else { # Unable to fork
-		die "ERROR: Could not fork new process: $!\n";
+	} else { # Unable to fork()
+		warn "ERROR: Could not fork new process: $!\n";
 	}
 }
