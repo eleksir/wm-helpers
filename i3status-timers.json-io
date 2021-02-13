@@ -1,22 +1,26 @@
 #!/usr/bin/perl
 # vim: set ai noet ts=4 sw=4 sts=4 ft=perl :
 
-use strict;
-use warnings "all";
-use Fcntl qw(:seek :mode :DEFAULT);
-use 5.10.0;
 use utf8;
+use open qw (:std :utf8);
+use strict;
+use warnings;
+use Carp qw (confess);
+use Data::Dumper;
+use Fcntl qw(:seek :mode :DEFAULT);
+use 5.22.2;
 use JSON::XS;
+use Net::DBus;
+use POSIX qw (setsid);
 use threads;
-
-binmode STDOUT;
-binmode STDERR;
 
 sub input_thread();
 sub readconf();
 sub gettimestr();
 sub getlastr();
 sub getbatterychargestr2();
+sub getbatterychargestr3();
+sub to_hours ($);
 sub meminfo();
 sub ifaces();
 sub cpuspeed();
@@ -26,9 +30,18 @@ sub caps_find();
 
 sub spawn(@);
 
+binmode STDIN;
+binmode STDERR;
+binmode STDOUT;
+
 my $read = 0;
+$SIG{__DIE__} = \&Carp::confess;;
 $SIG{"CONT"} = sub { $read = 1 };
 $SIG{"STOP"} = sub { $read = 0 };
+$SIG{"PIPE"} = sub { warn "SIGPIPE" };
+$SIG{"HUP"} = sub { warn "SIGHUP" };
+$SIG{"USR1"} = sub { warn "SIGUSR1" };
+$SIG{"WINCH"} = sub { warn "SIGWINCH" };
 
 my $slow_timer = 360; # 0.333 * 360 ~= 2 min
 my $onesec_timer = 3; # 0.333 * 3   ~= 1 sec
@@ -83,13 +96,19 @@ if ( -f "/sys/class/power_supply/ADP1/online") {
 	$ACFILE = "/sys/class/power_supply/AC/online";
 }
 
+# prep dee-boos connection
+my $bus = Net::DBus->system;
+my $upower = $bus->get_service("org.freedesktop.UPower");
+my $properties = $upower->get_object("/org/freedesktop/UPower/devices/battery_BAT0", "org.freedesktop.DBus.Properties");
+
 threads->create('input_thread')->detach();
 
-sleep 1;
-
-syswrite STDOUT, '{"version": 1, "stop_signal": 10, "cont_signal": 12, "click_events": true}
+# capture click events and do not override sigstop and sigcont numbers
+syswrite STDOUT, '{"version": 1, "click_events": true}
 [ [], 
 ';
+
+sleep 1;
 
 while (1) {
 	# json message that will be spewed to i3bar
@@ -126,7 +145,7 @@ while (1) {
 	}
 
 	if ($slow_timer >= 360) {
-		$tmp = getbatterychargestr2();
+		$tmp = getbatterychargestr3();
 		if ($charge ne $tmp) {
 			$jf = 1;
 			$charge = $tmp;
@@ -166,8 +185,10 @@ while (1) {
 		@{$je} = (@{$jo}, @{$C});
 		@{$je} = reverse(@{$je});
 
-		if (my $output = encode_json($je)) {
-			syswrite STDOUT, encode_json($je) . ",\n";
+		my $output = eval { encode_json($je); };
+
+		if ($output) {
+			syswrite STDOUT, $output . ",\n";
 		}
 
 		$jf = 0;
@@ -181,13 +202,18 @@ while (1) {
 }
 
 sub readconf() {
-	open (CONF, "$ENV{HOME}/.i3/config.json") or die "Unable to open $ENV{HOME}/.i3/config.json: $!\n";
-	my $sep = $/;
-	$/ = '';
-	my $c = readline(*CONF);
-	close CONF;
-	$/ = $sep;
-	$c = decode_json($c) or die "Unable to decode $ENV{HOME}/.i3/config.json: $!\n";
+	open (my $CONF, '<:encoding(UTF-8)', "$ENV{HOME}/.i3/config.json") or die "Unable to open $ENV{HOME}/.i3/config.json: $!\n";
+	my $len = (stat "$ENV{HOME}/.i3/config.json")[7];
+	use bytes;
+	read ($CONF, my $c, $len) or die "unable to read $ENV{HOME}/.i3/config.json";
+	no bytes;
+	close $CONF;
+	$c = eval { decode_json ($c); };
+
+	if ($@) {
+		die "Unable to decode $ENV{HOME}/.i3/config.json: $@\n";
+	}
+
 	my ($j, %cmd);
 	my $cnt = 0;
 
@@ -210,11 +236,12 @@ sub input_thread() {
 # elements as independed json messages, but we have to strip leading ","
 
 	readline(*STDIN); # throw away leading "[\n"
+	my $char;
 
 	while (1) {
-		next if (eof(STDIN));
-		my $msg = readline(*STDIN);
-		$msg = substr($msg, 1, -1) if (substr($msg, 0, 1) eq ','); # drop leading ',' if present
+		my $msg = eval { readline(*STDIN) };
+		next unless ($msg);
+		$msg = substr($msg, 1) if (substr($msg, 0, 1) eq ','); # drop leading ',' if present
 		my $j = decode_json($msg);
 
 		if (defined($CMD{$j->{name}})) {
@@ -274,6 +301,42 @@ sub getbatterychargestr2() {
 	seek $DCHANDLE, SEEK_SET, 0;
 
 	return $str;
+}
+
+sub getbatterychargestr3() {
+	my $capacity = $properties->Get('org.freedesktop.UPower.Device', 'Percentage');
+	my $state = $properties->Get('org.freedesktop.UPower.Device', 'State');
+	my $time = "?";
+
+	if ($state == 2) {
+# discharging
+		$time = $properties->Get('org.freedesktop.UPower.Device', 'TimeToEmpty');
+		# time in seconds, let's translate it to hours:minutes
+		$state = '▼';
+	} elsif ($state == 1) {
+# charging
+		$time = $properties->Get('org.freedesktop.UPower.Device', 'TimeToFull');
+		$state = '▲';
+	} else {
+# already charged
+		$time = 0;
+		$state = '•';
+	}
+
+	$time = to_hours ($time) unless ($time eq '?');
+
+	return sprintf("⚡ %s%% %s %s", $capacity, $state, $time);
+}
+
+sub to_hours ($) {
+	my $sec = shift;
+
+	my $hrs = $sec / (60 * 60);
+	$hrs = 0 if ( $hrs < 1 );
+	my $min = ($sec - ($hrs * 60 * 60)) / 60;
+	$min = 0 if ( $min < 1 );
+
+	return sprintf("%02d:%02d", $hrs, $min);
 }
 
 sub meminfo() {
@@ -507,19 +570,29 @@ sub spawn (@) {
 	if ($pid) { # Parent
 		return;
 	} elsif ($pid == 0) { # Child
+		POSIX::setsid ();
 # we need no io streams here, right?
 # it seems that at least vscode creashes if we close stdio handles
 		open(STDOUT, ">", "/dev/null");
 		open(STDERR, ">", "/dev/null");
 		open(STDIN,  "<", "/dev/null");
-		my $prg = shift(@args);
-# weird situation, silently quit here :)
-		exit 0 unless(defined($prg));
+		$pid = fork ();
 
-		if (@args > 0) {
-			exec $prg @args;
-		} else {
-			exec $prg;
+		if ($pid) { # Parent
+			# in this place parent quits
+			exit 0;
+		} elsif ($pid == 0) { # Child
+			my $prg = shift(@args);
+			# weird situation, silently quit here :)
+			exit 0 unless(defined($prg));
+
+			if (@args > 0) {
+				exec $prg @args;
+			} else {
+				exec $prg;
+			}
+		} else { # Unable to fork()
+			syswrite STDERR, "[{\"full_text\":\"ERROR: Could not fork new process: $!\",\"color\":\"#ff0000\"}],\n";
 		}
 	} else { # Unable to fork()
 		syswrite STDERR, "[{\"full_text\":\"ERROR: Could not fork new process: $!\",\"color\":\"#ff0000\"}],\n";
