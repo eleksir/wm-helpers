@@ -1,72 +1,148 @@
-	[
+# Enable "plugin" 1, disable "plugin" 0
+{
+# Load Average
+"la" : 1,
+# Memory stats
+"mem" : 1,
+# Just clock
+"clock": 1,
+# Battery
+"battery": 1,
+# 0-th core temperature
+"cpu_temp": 1,
+# Caps Lock staus
+"capslock": 1,
+# Application Buttons
+"app_buttons": 1,
+# OpenVPN status. Note that directive status in openvpn.conf should point to
+# state file and update its timestamp at least as frequent as mtime_threshold in seconds
+"vpn": {
+	"enabled": 0,
+	"statusfile" : "/tmp/openvpn-status.stat",
+	"mtime_threshold": 10,
+# Also we can tcp-ping some service inside vpn network to ensure that connection is not stoned
+	"tcp_check" : {
+		"enabled": 0,
+		"host": "somehost.com",
+		"port": "443",
+		"timeout" : 3
+	}
+},
+# Buttons :)
+"apps": [
 		{
-			"full_text" : "u",
-			"name" : "urxvt",
-			"cmd" : "urxvtc"
+			"full_text" : " X ",
+			"name" : "kill_fbpanel",
+			"cmd" : "killall -9 fbpanel",
+			"color": "#aa0000",
+			"border": "#adadad",
+			"separator": false,
+			"separator_block_width": 2
 		},
 		{
-			"full_text" : "l",
-			"name" : "lxterm",
-			"cmd" : "lxterminal"
+			"full_text" : " Term ",
+			"name" : "lilyterm",
+			"cmd" : "lilyterm",
+			"color" : "#666666",
+			"border": "#adadad",
+			"separator": false,
+			"separator_block_width": 2
+
 		},
 		{
-			"full_text" : "f",
+			"full_text" : " Ff ",
 			"name" : "firefox",
-			"cmd" : "firefox"
+			"cmd" : "firefox",
+			"color" : "#ffa500",
+			"border": "#adadad",
+			"separator": false,
+			"separator_block_width": 2
 		},
 		{
-			"full_text" : "v",
+			"full_text" : " V ",
 			"name" : "vivaldi",
-			"cmd" : "vivaldi"
+			"cmd" : "vivaldi",
+			"color" : "#ffa500",
+			"border": "#adadad",
+			"separator": false,
+			"separator_block_width": 2
 		},
 		{
-			"full_text" : "c",
-			"name" : "chromium",
-			"cmd" : "chromium"
+			"full_text" : " Chr ",
+			"name" : "chrome",
+			"cmd" : "chrome",
+			"color" : "#ffa500",
+			"border": "#adadad",
+			"separator": false,
+			"separator_block_width": 2
 		},
 		{
-			"full_text" : "o",
+			"full_text" : " O ",
 			"name" : "opera",
-			"cmd" : "opera"
+			"cmd" : "opera",
+			"color" : "#ffa500",
+			"border": "#adadad",
+			"separator": false,
+			"separator_block_width": 2
 		},
 		{
-			"full_text" : "t",
+			"full_text" : " @ ",
 			"name" : "thunderbird",
-			"cmd" : "thunderbird"
+			"cmd" : "thunderbird",
+			"color" : "#006994",
+			"border": "#adadad",
+			"separator": false,
+			"separator_block_width": 2
 		},
 		{
-			"full_text" : "t",
+			"full_text" : " Tg ",
 			"name" : "telegram",
-			"cmd" : "Telegram"
+			"cmd" : "Telegram",
+			"color" : "#5a8850",
+			"border": "#adadad",
+			"separator": false,
+			"separator_block_width": 2
 		},
 		{
-			"full_text" : "i",
-			"name" : "icq",
-			"cmd" : "icq"
+			"full_text" : " M ",
+			"name" : "myteam",
+			"cmd" : "myteam",
+			"color" : "#5a8850",
+			"border": "#adadad",
+			"separator": false,
+			"separator_block_width": 2
 		},
 		{
-			"full_text" : "s",
+			"full_text" : " S ",
 			"name" : "slack",
-			"cmd" : "slack"
+			"cmd" : "slack",
+			"color" : "#5a8850",
+			"border": "#adadad",
+			"separator": false,
+			"separator_block_width": 2
 		},
 		{
-			"full_text" : "z",
-			"name" : "zim",
-			"cmd" : "zim"
-		},
-		{
-			"full_text" : "m",
+			"full_text" : " Txt ",
 			"name" : "mousepad",
-			"cmd" : "mousepad"
+			"cmd" : "mousepad",
+			"border": "#adadad",
+			"separator": false,
+			"separator_block_width": 2
 		},
 		{
-			"full_text" : "c",
+			"full_text" : " VSC ",
 			"name" : "code",
-			"cmd" : "code"
+			"cmd" : "code",
+			"border": "#adadad",
+			"separator": false,
+			"separator_block_width": 2
 		},
 		{
-			"full_text" : "k",
+			"full_text" : " K ",
 			"name" : "keepassxc",
-			"cmd" : "keepassxc"
+			"cmd" : "keepassxc",
+			"color" : "#7ec850",
+			"border": "#adadad"
 		}
 	]
+}

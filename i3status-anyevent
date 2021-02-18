@@ -16,20 +16,30 @@ use utf8;
 use open qw (:std :utf8);
 use Fcntl qw (:seek);
 use AnyEvent;
-#use Linux::Inotify2;
 use JSON::XS;
 use Net::DBus;
 use Encode;
+use IO::Socket qw (AF_INET SOCK_STREAM SHUT_WR);
 
+sub add_events ();
 sub spawn (@);
 sub find_caps_led ();
 sub to_hours ($);
 sub readconf ();
 
 my $CONF = readconf ();
+my $done = AnyEvent->condvar;
 
-# note that /proc and sys does not generate events via inotify()
-#my @files = qw( /proc/meminfo /proc/loadavg /tmp/boom /sys/class/net/wlan0/operstate );
+# event pool
+my @EP;
+
+# reload config and re-apply it on SIGHUP
+$SIG{HUP} = sub {
+	$CONF = readconf ();
+	$#EP = -1;
+	add_events ();
+};
+
 my @month = ('Янв', 'Фев', 'Мар', 'Апр', 'Май', 'Июн', 'Июл', 'Авг', 'Сен', 'Окт', 'Ноя', 'Дек');
 my @week_day = ('Вс', 'Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб');
 
@@ -46,18 +56,17 @@ my $meminfo = '';
 my $cputemp = '';
 my $caps_state = '';
 my $charge = '';
+my $tcp_check = 0;
+my $file_check = 0;
+my $file_check_mtime = 0;
 my $output_string;
 my $old_output_string = '';
 my $STDIN_FIRST_LINE_DROPPED = 0;
 
-#my $inotify = Linux::Inotify2->new or die "Can't create inotify object: $!";
-my $done = AnyEvent->condvar;
 my $CAPS_LED_PATH = find_caps_led ();
 
-# prep dee-boos connection
-my $bus = Net::DBus->system;
-my $upower = $bus->get_service ('org.freedesktop.UPower');
-my $properties = $upower->get_object ('/org/freedesktop/UPower/devices/battery_BAT0', 'org.freedesktop.DBus.Properties');
+# for fetching battery stats via dee-boos :)
+my $properties;
 
 # capture click events and do not override sigstop and sigcont numbers
 syswrite STDOUT, << 'EOJSON';
@@ -65,263 +74,371 @@ syswrite STDOUT, << 'EOJSON';
 [ [], 
 EOJSON
 
-#foreach my $file (@files) {
-#	$inotify->watch (
-#		$file,
-#		IN_MODIFY,
-#
-#		sub {
-#			my $e = shift;
-##			if ($e->IN_MODIFY) {
-#				print "$file modified\n";
-#			}
-#		}
-#	);
-#}
-
-# Register callbacks/event handlers
-
-# Actually print messages there
-my $watch_stdout = AnyEvent->timer (
-	after    => 1,    # sleep 1 second
-	interval => 0.3,  # then invoke every 1 second
-	cb       => sub { # the callback to invoke
-
-		my $OUTPUT;
-		@{$OUTPUT} = @{$CONF};
-
-		push @{$OUTPUT}, { "color" => "#3e78fd", "full_text" => $caps_state };
-		push @{$OUTPUT}, { "color" => "#3e78fd", "full_text" => $cputemp };
-		push @{$OUTPUT}, { "color" => "#3e78fd", "full_text" => $meminfo };
-		push @{$OUTPUT}, { "color" => "#3e78fd", "full_text" => "LA: $la" };
-		push @{$OUTPUT}, { "color" => "#3e78fd", "full_text" => $charge };
-		push @{$OUTPUT}, { "color" => "#3e78fd", "full_text" => $wallclock };
-
-		$output_string = eval { encode_json ($OUTPUT) };
-
-		if (defined $output_string) {
-			if ($output_string ne $old_output_string) {
-				syswrite STDOUT, decode ('UTF-8', $output_string) . ",\n";
-				$old_output_string = $output_string;
-			}
-		} else {
-			warn $@;
-		}
-
-		@{$OUTPUT} = -1;
-	}
-);
+add_events ();
+warn "events added";
+$done->recv ();
+exit 0;
 
 
-# read STDIN
-my $watch_stdin = AnyEvent->io (
-	fh   => \*STDIN,
-	poll => 'r',
-	cb   => sub {
-		my $msg = <>;
-
-		unless ($STDIN_FIRST_LINE_DROPPED) {
-			$msg = <>;
-			$STDIN_FIRST_LINE_DROPPED = 1;
-		}
-
-		if ($msg) {
-			# drop leading ',' if present
-			if (substr ($msg, 0, 1) eq ',') {
-				$msg = substr $msg, 1;
-			}
-
-			my $j = eval { decode_json ($msg) };
-
-			if (defined $j) {
-				foreach (@{$CONF}) {
-					if ((defined $_->{name}) && ($j->{name} eq $_->{name})) {
-						spawn ($_->{cmd});
-						last;
-					}
-				}
-			}
+sub add_events () {
+	# prep dee-boos connection
+	if ($CONF->{battery}) {
+		unless (defined $properties) {
+			# we should not install more than one connection to dbus,
+			# but we can not break connection gracefully (via Net::DBus) once we make one
+			my $bus = Net::DBus->system;
+			my $upower = $bus->get_service ('org.freedesktop.UPower');
+			$properties = $upower->get_object ('/org/freedesktop/UPower/devices/battery_BAT0', 'org.freedesktop.DBus.Properties');
 		}
 	}
-);
 
-# poll caps lock status, on one of my laptop there is no led for this :(
-my $watch_caps_led = AnyEvent->timer (
-	after    => 0,    # first invoke ASAP
-	interval => 0.3,  # then invoke every 0.3 seconds
-	cb       => sub { # the callback to invoke
-		if (defined $CAPS_LED_PATH) {
-			if (defined $CAPSHANDLE) {
-				if (tell ($CAPSHANDLE) == -1) {
-					unless (open $CAPSHANDLE, '<', $CAPS_LED_PATH) {
-						$CAPS_LED_PATH = undef;
-						$caps_state = 2;
-					}
-				}
-			} else {
-				unless (open $CAPSHANDLE, '<', $CAPS_LED_PATH) {
-					$CAPS_LED_PATH = undef;
-					$caps_state = 2
-				}
+	# Register callbacks/event handlers
+
+	# Actually print messages there
+	push @EP, AnyEvent->timer (
+		after    => 1,    # sleep 1 second
+		interval => 0.3,  # then invoke every 1 second
+		cb       => sub { # the callback to invoke
+			my $OUTPUT;
+
+			if ($CONF->{app_buttons}) {
+				@{$OUTPUT} = @{$CONF->{apps}};
 			}
-		} else {
-			$caps_state = 2;
-		}
 
-		if ($caps_state eq '2') {
-			$caps_state = '? caps';
-		} else {
-			$caps_state = eval { readline ($CAPSHANDLE) };
-			seek $CAPSHANDLE, SEEK_SET, 0;
-			chomp $caps_state;
-
-			if ($caps_state eq '1') {
-				$caps_state = '☒ caps';
-			} else {
-				$caps_state = '☐ caps';
-			}
-		}
-	}
-);
-
-# poll clock by timer
-my $watch_clock = AnyEvent->timer (
-	after    => 0,    # first invoke ASAP
-	interval => 1,    # then invoke every 1 second
-	cb       => sub { # the callback to invoke
-		# Fetch time for clock
-		my ($sec, $min, $hour, $mday, $mon, $year, $wday) = (localtime)[0,1,2,3,4,5,6];
-		$year = $year + 1900;
-		$wallclock = sprintf '     %s, %s %s %s  %02s:%02s  ', $week_day[$wday], $mday, $month[$mon], $year, $hour, $min;
-	}
-);
-
-
-# poll battery status via dbus
-# but it is possible to fetch this status via upower directly
-my $watch_battery = AnyEvent->timer (
-	after    => 0,    # first invoke ASAP
-	interval => 10,   # then invoke every 10 seconds
-	cb       => sub { # the callback to invoke
-		my $capacity = $properties->Get ('org.freedesktop.UPower.Device', 'Percentage');
-		my $state = $properties->Get ('org.freedesktop.UPower.Device', 'State');
-		my $time = '?';
-
-		if ($state == 2) {
-			# discharging
-			$time = $properties->Get ('org.freedesktop.UPower.Device', 'TimeToEmpty');
-			# time in seconds, let's translate it to hours:minutes
-			$state = '▼';
-		} elsif ($state == 1) {
-			# charging
-			$time = $properties->Get ('org.freedesktop.UPower.Device', 'TimeToFull');
-			$state = '▲';
-		} else {
-			# already charged
-			$time = 0;
-			$state = '•';
-		}
-
-		if ($time ne '?') {
-			$time = to_hours ($time);
-		}
-
-		$charge = sprintf '⚡ %s%% %s %s', $capacity, $state, $time;
-	}
-);
-
-
-# put all fast accessable stats in one callback
-my $watch_stats = AnyEvent->timer (
-	after    => 0,    # first invoke ASAP
-	interval => 3,    # then invoke every 3 second
-	cb       => sub { # the callback to invoke
-
-		# Fetch Load Average
-		if (defined $LAHANDLE) {
-			if (tell ($LAHANDLE) == -1) {
-				open $LAHANDLE, '<', '/proc/loadavg';
-			}
-		} else {
-			open $LAHANDLE, '<', '/proc/loadavg';
-		}
-
-		$la = readline ($LAHANDLE);
-		seek $LAHANDLE, SEEK_SET, 0;
-		$la = (split / /ms, $la, 2)[0];
-
-		# populate memory statistics
-		if (defined $MEMINFOHANDLE) {
-			if (tell ($MEMINFOHANDLE) == -1) {
-				open $MEMINFOHANDLE, '<', '/proc/meminfo';
-			}
-		} else {
-			open $MEMINFOHANDLE, '<', '/proc/meminfo';
-		}
-
-		my @mem;
-
-		while ( ! eof ($MEMINFOHANDLE) ) {
-			push @mem, readline ($MEMINFOHANDLE);
-		}
-
-		seek $MEMINFOHANDLE, SEEK_SET, 0;
-		@mem = map { substr $_, 0, -4 } @mem;
-		my $memavail  = (split /\s+/xms, $mem[2])[1];
-		my $swaptotal = (split /\s+/xms, $mem[14])[1];
-		my $swapfree  = (split /\s+/xms, $mem[15])[1];
-
-		$meminfo = sprintf (
-			'mem/sw: %s/%s M',
-			int ($memavail / 1024),
-			int (($swaptotal - $swapfree) / 1024)
-		);
-
-		# populate cpu temperature info
-		my $hwmon = 1;
-
-		if (defined $CPUTEMPHANDLE) {
-			if (tell $CPUTEMPHANDLE == -1) {
-				if (open ($CPUTEMPHANDLE, '<', '/sys/class/hwmon/hwmon0/temp1_input')) {
-					$hwmon = 1;
+			if ($CONF->{capslock}) {
+				unless ($caps_state) {
+					push @{$OUTPUT}, { "color" => "#3e78fd", "background" => "#edeceb", border => "#edeceb", "full_text" => "caps", "markup" => "pango"};
 				} else {
-					$hwmon = 0;
+					push @{$OUTPUT}, { "background" => "#3e78fd", "color" => "#edeceb", border => "#edeceb", "full_text" => "caps", "markup" => "pango"};
 				}
 			}
-		} else {
-			open ($CPUTEMPHANDLE, '<', '/sys/class/hwmon/hwmon0/temp1_input') or do {
-				$hwmon = 0;
-			};
-		}
 
-		if ($hwmon) {
-			$cputemp = readline $CPUTEMPHANDLE;
-			seek $CPUTEMPHANDLE, SEEK_SET, 0;
-			chomp $cputemp;
-			$cputemp = int $cputemp;
-
-			if ($cputemp > 1000) {
-				$cputemp = int ($cputemp / 1000);
+			if ($CONF->{cpu_temp}) {
+				push @{$OUTPUT}, { "color" => "#3e78fd", "full_text" => $cputemp };
 			}
 
-			$cputemp = sprintf('%s°', $cputemp);
+			if ($CONF->{mem}) {
+				push @{$OUTPUT}, { "color" => "#3e78fd", "full_text" => $meminfo };
+			}
+
+			if ($CONF->{la}) {
+				push @{$OUTPUT}, { "color" => "#3e78fd", "full_text" => "LA: $la" };
+			}
+
+			my $vpn_str = 'VPN:';
+
+			if ($CONF->{vpn}->{enabled}) {
+				if ($file_check) {
+					$vpn_str .= '⍋';
+				} else {
+					$vpn_str .= '⍒';
+				}
+			}
+
+			if ($CONF->{vpn}->{tcp_check}->{enabled}) {
+				if ($CONF->{vpn}->{enabled}) {
+					$vpn_str .= ':';
+				}
+
+				if ($tcp_check) {
+					$vpn_str .= '✔';
+				} else {
+					$vpn_str .= '✘';
+				}
+			}
+
+			if ($CONF->{vpn}->{tcp_check}->{enabled} || $CONF->{vpn}->{enabled}) {
+				push @{$OUTPUT}, { "color" => "#3e78fd", "full_text" => $vpn_str };
+			}
+
+			if ($CONF->{battery}) {
+				push @{$OUTPUT}, { "color" => "#3e78fd", "full_text" => $charge };
+			}
+
+			if ($CONF->{clock}) {
+				push @{$OUTPUT}, { "color" => "#000000", "full_text" => "<big>$wallclock</big>", "markup" => "pango"};
+			}
+
+			$output_string = eval { encode_json ($OUTPUT) };
+
+			if (defined $output_string) {
+				if ($output_string ne $old_output_string) {
+					syswrite STDOUT, decode ('UTF-8', $output_string) . ",\n";
+					$old_output_string = $output_string;
+				}
+			} else {
+				warn $@;
+			}
+
+			@{$OUTPUT} = -1;
 		}
-	},
-);
+	);
 
 
-# This callback for inotify stuff
-#my $watch_file_event = AnyEvent->idle (
-#	cb => sub {
-#		$inotify->poll;
-#	}
-#);
+	# read STDIN
+	push @EP, AnyEvent->io (
+		fh   => \*STDIN,
+		poll => 'r',
+		cb   => sub {
+			my $msg = <>;
 
-$done->recv();
+			unless ($STDIN_FIRST_LINE_DROPPED) {
+				$msg = <>;
+				$STDIN_FIRST_LINE_DROPPED = 1;
+			}
+
+			if ($msg) {
+				# drop leading ',' if present
+				if (substr ($msg, 0, 1) eq ',') {
+					$msg = substr $msg, 1;
+				}
+
+				my $j = eval { decode_json ($msg) };
+
+				if (defined $j) {
+					foreach (@{$CONF->{apps}}) {
+						unless (defined $_->{name}) {
+							next;
+						}
+
+						unless (defined $j->{name}) {
+							next;
+						}
+
+						if ($j->{name} eq $_->{name}) {
+							spawn ($_->{cmd});
+							last;
+						}
+					}
+				}
+			}
+		}
+	);
+
+	# poll caps lock status, on one of my laptop there is no led for this :(
+	if ($CONF->{capslock}) {
+		push @EP, AnyEvent->timer (
+			after    => 0,    # first invoke ASAP
+			interval => 0.3,  # then invoke every 0.3 seconds
+			cb       => sub { # the callback to invoke
+				if (defined $CAPS_LED_PATH) {
+					if (defined $CAPSHANDLE) {
+						if (tell ($CAPSHANDLE) == -1) {
+							unless (open $CAPSHANDLE, '<', $CAPS_LED_PATH) {
+								$CAPS_LED_PATH = undef;
+								$caps_state = 2;
+							}
+						}
+					} else {
+						unless (open $CAPSHANDLE, '<', $CAPS_LED_PATH) {
+							$CAPS_LED_PATH = undef;
+							$caps_state = 2
+						}
+					}
+				} else {
+					$caps_state = 2;
+				}
+
+				if ($caps_state ne '2') {
+					$caps_state = eval { readline ($CAPSHANDLE) };
+					seek $CAPSHANDLE, SEEK_SET, 0;
+					chomp $caps_state;
+				}
+			}
+		);
+	}
+
+	# poll clock by timer
+	if ($CONF->{clock}) {
+		push @EP, AnyEvent->timer (
+			after    => 0,    # first invoke ASAP
+			interval => 1,    # then invoke every 1 second
+			cb       => sub { # the callback to invoke
+				# Fetch time for clock
+				my ($sec, $min, $hour, $mday, $mon, $year, $wday) = (localtime)[0,1,2,3,4,5,6];
+				$year = $year + 1900;
+				$wallclock = sprintf '     %s, %s %s %s  %02s:%02s  ', $week_day[$wday], $mday, $month[$mon], $year, $hour, $min;
+			}
+		);
+	}
+
+	# poll battery status via dbus
+	# but it is possible to fetch this status via upower directly
+	if ($CONF->{battery}) {
+		push @EP, AnyEvent->timer (
+			after    => 0,    # first invoke ASAP
+			interval => 10,   # then invoke every 10 seconds
+			cb       => sub { # the callback to invoke
+				my $capacity = $properties->Get ('org.freedesktop.UPower.Device', 'Percentage');
+				my $state = $properties->Get ('org.freedesktop.UPower.Device', 'State');
+				my $time = '?';
+
+				if ($state == 2) {
+					# discharging
+					$time = $properties->Get ('org.freedesktop.UPower.Device', 'TimeToEmpty');
+					# time in seconds, let's translate it to hours:minutes
+					$state = '▼';
+				} elsif ($state == 1) {
+					# charging
+					$time = $properties->Get ('org.freedesktop.UPower.Device', 'TimeToFull');
+					$state = '▲';
+				} else {
+					# already charged
+					$time = 0;
+					$state = '•';
+				}
+
+				if ($time ne '?') {
+					$time = to_hours ($time);
+				}
+
+				$charge = sprintf '⚡ %s%% %s %s', $capacity, $state, $time;
+			}
+		);
+	}
+
+	# put all fast accessable stats in one callback
+	push @EP, AnyEvent->timer (
+		after    => 0,    # first invoke ASAP
+		interval => 3,    # then invoke every 3 second
+		cb       => sub { # the callback to invoke
+
+			# Fetch Load Average
+			if ($CONF->{la}) {
+				if (defined $LAHANDLE) {
+					if (tell ($LAHANDLE) == -1) {
+						open $LAHANDLE, '<', '/proc/loadavg';
+					}
+				} else {
+					open $LAHANDLE, '<', '/proc/loadavg';
+				}
+
+				$la = readline ($LAHANDLE);
+				seek $LAHANDLE, SEEK_SET, 0;
+				$la = (split / /ms, $la, 2)[0];
+			}
+
+			# populate memory statistics
+			if ($CONF->{mem}) {
+				if (defined $MEMINFOHANDLE) {
+					if (tell ($MEMINFOHANDLE) == -1) {
+						open $MEMINFOHANDLE, '<', '/proc/meminfo';
+					}
+				} else {
+					open $MEMINFOHANDLE, '<', '/proc/meminfo';
+				}
+
+				my @mem;
+
+				while ( ! eof ($MEMINFOHANDLE) ) {
+					push @mem, readline ($MEMINFOHANDLE);
+				}
+
+				seek $MEMINFOHANDLE, SEEK_SET, 0;
+				@mem = map { substr $_, 0, -4 } @mem;
+				my $memtotal = (split /\s+/xms, $mem[0])[1];
+				my $memavail  = (split /\s+/xms, $mem[2])[1];
+				my $swaptotal = (split /\s+/xms, $mem[14])[1];
+				my $swapfree  = (split /\s+/xms, $mem[15])[1];
+				my $shmem = (split /\s+/xms, $mem[20])[1];
+				my $memused = int (($memtotal - $memavail) / ($memtotal / 100));
+
+				$meminfo = sprintf (
+					'M:%d%% SHM:%dM SW:%dM',
+					$memused,
+					int ($shmem / 1024),
+					int (($swaptotal - $swapfree) / 1024)
+				);
+			}
+
+			# populate cpu temperature info
+			if ($CONF->{cpu_temp}) {
+				my $hwmon = 1;
+
+				if (defined $CPUTEMPHANDLE) {
+					if (tell $CPUTEMPHANDLE == -1) {
+						if (open ($CPUTEMPHANDLE, '<', '/sys/class/hwmon/hwmon0/temp1_input')) {
+							$hwmon = 1;
+						} else {
+							$hwmon = 0;
+						}
+					}
+				} else {
+					open ($CPUTEMPHANDLE, '<', '/sys/class/hwmon/hwmon0/temp1_input') or do {
+						$hwmon = 0;
+					};
+				}
+
+				if ($hwmon) {
+					$cputemp = readline $CPUTEMPHANDLE;
+					seek $CPUTEMPHANDLE, SEEK_SET, 0;
+					chomp $cputemp;
+					$cputemp = int $cputemp;
+
+					if ($cputemp > 1000) {
+						$cputemp = int ($cputemp / 1000);
+					}
+
+					$cputemp = sprintf('%s°', $cputemp);
+				}
+			}
+		},
+	);
+
+	# Try to tcp connect to server
+	if ($CONF->{vpn}->{tcp_check}->{enabled}) {
+		push @EP, AnyEvent->timer (
+			after    => 0,    # first invoke ASAP
+			interval => 5,    # then invoke every 5 seconds
+			cb       => sub { # the callback to invoke
+				if (
+					my $sock = IO::Socket->new (
+						Domain   => AF_INET,
+						proto    => 'tcp',
+						PeerHost => $CONF->{vpn}->{tcp_check}->{host},
+						PeerPort => $CONF->{vpn}->{tcp_check}->{port},
+						Type     => SOCK_STREAM,
+						Timeout  => $CONF->{vpn}->{tcp_check}->{timeout}
+					)
+				) {
+					$sock->shutdown (SHUT_WR);
+					$sock->close ();
+					$tcp_check = 1;
+				} else {
+					$tcp_check = 0;
+				}
+			}
+		);
+	}
+
+	# check file mtime
+	if ($CONF->{vpn}->{enabled}) {
+		push @EP, AnyEvent->timer (
+			after    => 0,    # first invoke ASAP
+			interval => 3,    # then invoke every 3 seconds
+			cb       => sub { # the callback to invoke
+				my $mtime = (stat $CONF->{vpn}->{statusfile}) [8];
+
+				if (defined $mtime) {
+					if (($mtime - $file_check_mtime) < $CONF->{vpn}->{mtime_threshold}) {
+						$file_check = 1;
+					} else {
+						$file_check = 0;
+					}
+
+					$file_check_mtime = $mtime;
+				} else {
+					$mtime = 0;
+					$file_check = 0;
+				}
+			}
+		);
+	}
+}
 
 sub spawn (@) {
 	my @args = @_;
-	my  $pid = fork();
+	my  $pid = fork ();
 
 	if ($pid) {
 		# Parent, work done, return
@@ -330,21 +447,24 @@ sub spawn (@) {
 		# Child, we need to exec() given prog with args
 
 		# it seems that at least vscode creashes if we close stdio handles
-		open STDOUT, ">", '/dev/null';
-		open STDERR, ">", '/dev/null';
-		open STDIN,  '<', '/dev/null';
+		close STDOUT;
+		close STDERR;
+		close STDIN;
+#		open STDOUT, '>', '/dev/null';
+#		open STDERR, '>', '/dev/null';
+#		open STDIN,  '<', '/dev/null';
 		$pid = fork ();
 
 		if ($pid) { # Parent
 			# in this place parent quits
 			exit 0;
 		} elsif ($pid == 0) { # Child
-			my $prg = shift(@args);
+			my $prg = shift (@args);
 			# weird situation, silently quit here :)
-			exit 0 unless(defined($prg));
+			exit 0 unless (defined $prg);
 
 			if (@args > 0) {
-				exec $prg @args;
+				exec $prg, @args;
 			} else {
 				exec $prg;
 			}
@@ -406,7 +526,7 @@ sub readconf () {
 		die "Unable to read $file: read $readlen, but stat() reports that file is $len bytes\n";
 	}
 
-	my $config = eval { decode_json ($data) };
+	my $config = eval { JSON::XS->new->utf8->relaxed->decode ($data) };
 
 	if ($@) {
 		die "Unable to decode $file: $@\n";
