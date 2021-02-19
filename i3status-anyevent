@@ -16,6 +16,7 @@ use utf8;
 use open qw (:std :utf8);
 use Fcntl qw (:seek);
 use AnyEvent;
+use AnyEvent::I3;
 use JSON::XS;
 use Net::DBus;
 use Encode;
@@ -26,9 +27,12 @@ sub spawn (@);
 sub find_caps_led ();
 sub to_hours ($);
 sub readconf ();
+sub active_win_borders ();
 
 my $CONF = readconf ();
+my $i3 = i3 ();
 my $done = AnyEvent->condvar;
+$i3->connect->recv or die 'Unable to connect to i3';
 
 # event pool
 my @EP;
@@ -36,6 +40,7 @@ my @EP;
 # reload config and re-apply it on SIGHUP
 $SIG{HUP} = sub {
 	$CONF = readconf ();
+	active_win_borders ();
 	$#EP = -1;
 	add_events ();
 };
@@ -68,14 +73,55 @@ my $CAPS_LED_PATH = find_caps_led ();
 # for fetching battery stats via dee-boos :)
 my $properties;
 
+# opened windows info storage ref
+my $win;
+
 # capture click events and do not override sigstop and sigcont numbers
 syswrite STDOUT, << 'EOJSON';
 {"version": 1, "click_events": true}
 [ [], 
 EOJSON
 
+# i3 events should persist over config relads
+my $i3_subscription->{window} = sub {
+	my $w = shift;
+
+	if (defined $w->{change}) {
+		if ($w->{change} eq 'new' ) {
+			if (defined $w->{container}->{window_properties}->{instance}) {
+				if (defined $win->{instance}->{$w->{container}->{window_properties}->{instance}}) {
+					$win->{instance}->{$w->{container}->{window_properties}->{instance}}++;
+				} else {
+					$win->{instance}->{$w->{container}->{window_properties}->{instance}} = 1;
+				}
+			}
+		} elsif ($w->{change} eq 'close') {
+			if (defined $w->{container}->{window_properties}->{instance}) {
+				if (defined $win->{instance}->{$w->{container}->{window_properties}->{instance}}) {
+					if ($win->{instance}->{$w->{container}->{window_properties}->{instance}} > 1) {
+						$win->{instance}->{$w->{container}->{window_properties}->{instance}} --;
+					} else {
+						delete $win->{instance}->{$w->{container}->{window_properties}->{instance}};
+					}
+				}
+			}
+		}
+
+		active_win_borders ();
+	}
+};
+
+$i3_subscription->{_error} = sub {
+	my ($msg) = @_;
+	die "Connection to i3 closed: $msg";
+};
+
+$i3->subscribe($i3_subscription)->recv->{success} || die 'Unable to subscribe to i3 events';
+
+# now we can add other events
 add_events ();
-warn "events added";
+
+# and start eventloop
 $done->recv ();
 exit 0;
 
@@ -107,22 +153,22 @@ sub add_events () {
 
 			if ($CONF->{capslock}) {
 				unless ($caps_state) {
-					push @{$OUTPUT}, { "color" => "#3e78fd", "background" => "#edeceb", border => "#edeceb", "full_text" => "caps", "markup" => "pango"};
+					push @{$OUTPUT}, { color => '#3e78fd', background => '#edeceb', border => '#edeceb', full_text => 'caps', markup => 'pango'};
 				} else {
-					push @{$OUTPUT}, { "background" => "#3e78fd", "color" => "#edeceb", border => "#edeceb", "full_text" => "caps", "markup" => "pango"};
+					push @{$OUTPUT}, { background => '#3e78fd', color => '#edeceb', border => '#edeceb', full_text => 'caps', markup => 'pango'};
 				}
 			}
 
 			if ($CONF->{cpu_temp}) {
-				push @{$OUTPUT}, { "color" => "#3e78fd", "full_text" => $cputemp };
+				push @{$OUTPUT}, { color => '#3e78fd', full_text => $cputemp };
 			}
 
 			if ($CONF->{mem}) {
-				push @{$OUTPUT}, { "color" => "#3e78fd", "full_text" => $meminfo };
+				push @{$OUTPUT}, { color => '#3e78fd', full_text => $meminfo };
 			}
 
 			if ($CONF->{la}) {
-				push @{$OUTPUT}, { "color" => "#3e78fd", "full_text" => "LA: $la" };
+				push @{$OUTPUT}, { color => '#3e78fd', full_text => "LA: $la" };
 			}
 
 			my $vpn_str = 'VPN:';
@@ -148,15 +194,15 @@ sub add_events () {
 			}
 
 			if ($CONF->{vpn}->{tcp_check}->{enabled} || $CONF->{vpn}->{enabled}) {
-				push @{$OUTPUT}, { "color" => "#3e78fd", "full_text" => $vpn_str };
+				push @{$OUTPUT}, { color => '#3e78fd', full_text => $vpn_str };
 			}
 
 			if ($CONF->{battery}) {
-				push @{$OUTPUT}, { "color" => "#3e78fd", "full_text" => $charge };
+				push @{$OUTPUT}, { color => '#3e78fd', full_text => $charge };
 			}
 
 			if ($CONF->{clock}) {
-				push @{$OUTPUT}, { "color" => "#000000", "full_text" => "<big>$wallclock</big>", "markup" => "pango"};
+				push @{$OUTPUT}, { color => '#000000', full_text => "<big>$wallclock</big>", markup => 'pango'};
 			}
 
 			$output_string = eval { encode_json ($OUTPUT) };
@@ -313,7 +359,7 @@ sub add_events () {
 					open $LAHANDLE, '<', '/proc/loadavg';
 				}
 
-				$la = readline ($LAHANDLE);
+				$la = readline $LAHANDLE;
 				seek $LAHANDLE, SEEK_SET, 0;
 				$la = (split / /ms, $la, 2)[0];
 			}
@@ -357,14 +403,14 @@ sub add_events () {
 
 				if (defined $CPUTEMPHANDLE) {
 					if (tell $CPUTEMPHANDLE == -1) {
-						if (open ($CPUTEMPHANDLE, '<', '/sys/class/hwmon/hwmon0/temp1_input')) {
+						if (open $CPUTEMPHANDLE, '<', '/sys/class/hwmon/hwmon0/temp1_input') {
 							$hwmon = 1;
 						} else {
 							$hwmon = 0;
 						}
 					}
 				} else {
-					open ($CPUTEMPHANDLE, '<', '/sys/class/hwmon/hwmon0/temp1_input') or do {
+					unless (open $CPUTEMPHANDLE, '<', '/sys/class/hwmon/hwmon0/temp1_input') {
 						$hwmon = 0;
 					};
 				}
@@ -379,7 +425,7 @@ sub add_events () {
 						$cputemp = int ($cputemp / 1000);
 					}
 
-					$cputemp = sprintf('%s°', $cputemp);
+					$cputemp = sprintf '%s°', $cputemp;
 				}
 			}
 		},
@@ -444,22 +490,17 @@ sub spawn (@) {
 		# Parent, work done, return
 		return;
 	} elsif ($pid == 0) {
-		# Child, we need to exec() given prog with args
-
 		# it seems that at least vscode creashes if we close stdio handles
-		close STDOUT;
-		close STDERR;
-		close STDIN;
-#		open STDOUT, '>', '/dev/null';
-#		open STDERR, '>', '/dev/null';
-#		open STDIN,  '<', '/dev/null';
+		open STDOUT, '>', '/dev/null';
+		open STDERR, '>', '/dev/null';
+		open STDIN,  '<', '/dev/null';
 		$pid = fork ();
 
 		if ($pid) { # Parent
 			# in this place parent quits
 			exit 0;
 		} elsif ($pid == 0) { # Child
-			my $prg = shift (@args);
+			my $prg = shift @args;
 			# weird situation, silently quit here :)
 			exit 0 unless (defined $prg);
 
@@ -509,8 +550,12 @@ sub to_hours ($) {
 }
 
 sub readconf () {
-	my $file =  "$ENV{HOME}/.i3/config.json";
-	open (my $FH, '<', $file) or die "Unable to open $file: $!\n";
+	my $file = "$ENV{HOME}/.i3/config.json";
+
+	unless (open my $FH, '<', $file) {
+		die "Unable to open $file: $!\n";
+	}
+
 	my $len = (stat $file)[7];
 	my $data;
 	use bytes;
@@ -528,9 +573,27 @@ sub readconf () {
 
 	my $config = eval { JSON::XS->new->utf8->relaxed->decode ($data) };
 
-	if ($@) {
+	unless ($config) {
 		die "Unable to decode $file: $@\n";
 	}
 
 	return $config;
+}
+
+sub active_win_borders () {
+	foreach my $app (@{$CONF->{apps}}) {
+		unless (defined $app->{border_inactive}) {
+			$app->{border_inactive} = $app->{border};
+		}
+
+		unless (defined $app->{border_active}) {
+			$app->{border_active} = $app->{border};
+		}
+
+		if (defined ($app->{instance}) && defined ($win->{instance}->{$app->{instance}})) {
+			$app->{border} = $app->{border_active};
+		} else {
+			$app->{border} = $app->{border_inactive};
+		}
+	}
 }
