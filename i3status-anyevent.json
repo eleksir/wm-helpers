@@ -2,18 +2,38 @@
 {
 # Load Average
 "la" : 1,
+
 # Memory stats
 "mem" : 1,
+
 # Just clock
-"clock": 1,
+"clock": {
+	"enabled" : 1,
+# html (actually, pango) color notation
+	"color" : "#000000"
+},
+
 # Battery
-"battery": 1,
+"battery": {
+	"enabled" : 1,
+# can be upower or something else to use /sys polling instead of periodic run of upower binary
+	"driver" : "upower",
+# where we can find charge_{now,full} and status files
+	"sys_dir" : "/sys/class/power_supply/BAT0",
+# invoke 'upower --enumerate' and choose one
+	"upower_device" : "/org/freedesktop/UPower/devices/battery_BAT0"
+},
+
 # 0-th core temperature
 "cpu_temp": 1,
-# Caps Lock staus
-"capslock": 1,
-# Application Buttons
-"app_buttons": 1,
+
+# Caps Lock status
+"capslock": {
+	"enabled" : 1,
+	"background" : "#3e78fd",
+	"color" : "#edeceb"
+},
+
 # OpenVPN status. Note that directive status in openvpn.conf should point to
 # state file and update its timestamp at least as frequent as mtime_threshold in seconds
 "vpn": {
@@ -28,7 +48,11 @@
 		"timeout" : 3
 	}
 },
-# Buttons :)
+
+# Weather to display Application Buttons
+"app_buttons": 1,
+
+# Buttons - application launch "buttons"
 "apps": [
 		{
 			"full_text" : " X ",
@@ -41,15 +65,38 @@
 			"separator_block_width": 2
 		},
 		{
+
+# text displayed on button
 			"full_text" : " Term ",
+
+# internal application name, must be unique
 			"name" : "lilyterm",
+
+# actual commad to be performed if button clicked
 			"cmd" : "lilyterm",
+
+# WM_CLASS(STRING) = "irssi", "URxvt"
+#                    ^-instance   ^-class
+
+# window instance as reported by xprop
 			"instance" : "lilyterm",
+
+# window class as reported by xprop
 			"class" : "LilyTerm",
+
+# text color
 			"color" : "#666666",
+
+# normal border color
 			"border": "#adadad",
+
+# border color if there is at lest one app window on desktop
 			"border_active": "#3e78fd",
+
+# if true - '|' will be drawn on panel to the right side of the "button"
 			"separator": false,
+
+# amount of space in pixels between buttons
 			"separator_block_width": 2
 		},
 		{

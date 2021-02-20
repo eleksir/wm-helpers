@@ -18,9 +18,11 @@ use Fcntl qw (:seek);
 use AnyEvent;
 use AnyEvent::I3;
 use JSON::XS;
-use Net::DBus;
 use Encode;
 use IO::Socket qw (AF_INET SOCK_STREAM SHUT_WR);
+use POSIX qw (setsid);
+
+local $| = 1;
 
 sub add_events ();
 sub spawn (@);
@@ -77,7 +79,7 @@ my $properties;
 my $win;
 
 # capture click events and do not override sigstop and sigcont numbers
-syswrite STDOUT, << 'EOJSON';
+print << 'EOJSON';
 {"version": 1, "click_events": true}
 [ [], 
 EOJSON
@@ -127,17 +129,6 @@ exit 0;
 
 
 sub add_events () {
-	# prep dee-boos connection
-	if ($CONF->{battery}) {
-		unless (defined $properties) {
-			# we should not install more than one connection to dbus,
-			# but we can not break connection gracefully (via Net::DBus) once we make one
-			my $bus = Net::DBus->system;
-			my $upower = $bus->get_service ('org.freedesktop.UPower');
-			$properties = $upower->get_object ('/org/freedesktop/UPower/devices/battery_BAT0', 'org.freedesktop.DBus.Properties');
-		}
-	}
-
 	# Register callbacks/event handlers
 
 	# Actually print messages there
@@ -151,11 +142,23 @@ sub add_events () {
 				@{$OUTPUT} = @{$CONF->{apps}};
 			}
 
-			if ($CONF->{capslock}) {
-				unless ($caps_state) {
-					push @{$OUTPUT}, { color => '#3e78fd', background => '#edeceb', border => '#edeceb', full_text => 'caps', markup => 'pango'};
+			if ($CONF->{capslock}->{enabled}) {
+				if ($caps_state) {
+					push @{$OUTPUT}, {
+						background => $CONF->{capslock}->{background},
+						color => $CONF->{capslock}->{color},
+						border => '#edeceb',
+						full_text => 'caps',
+						markup => 'pango'
+					};
 				} else {
-					push @{$OUTPUT}, { background => '#3e78fd', color => '#edeceb', border => '#edeceb', full_text => 'caps', markup => 'pango'};
+					push @{$OUTPUT}, {
+						color => $CONF->{capslock}->{background},
+						background => $CONF->{capslock}->{color},
+						border => '#edeceb',
+						full_text => 'caps',
+						markup => 'pango'
+					};
 				}
 			}
 
@@ -197,19 +200,19 @@ sub add_events () {
 				push @{$OUTPUT}, { color => '#3e78fd', full_text => $vpn_str };
 			}
 
-			if ($CONF->{battery}) {
+			if ($CONF->{battery}->{enabled}) {
 				push @{$OUTPUT}, { color => '#3e78fd', full_text => $charge };
 			}
 
-			if ($CONF->{clock}) {
-				push @{$OUTPUT}, { color => '#000000', full_text => "<big>$wallclock</big>", markup => 'pango'};
+			if ($CONF->{clock}->{enabled}) {
+				push @{$OUTPUT}, { color => $CONF->{clock}->{color}, full_text => "<big>$wallclock</big>", markup => 'pango'};
 			}
 
-			$output_string = eval { encode_json ($OUTPUT) };
+			$output_string = eval { encode_json $OUTPUT };
 
 			if (defined $output_string) {
 				if ($output_string ne $old_output_string) {
-					syswrite STDOUT, decode ('UTF-8', $output_string) . ",\n";
+					print decode ('UTF-8', $output_string) . ",\n";
 					$old_output_string = $output_string;
 				}
 			} else {
@@ -239,7 +242,7 @@ sub add_events () {
 					$msg = substr $msg, 1;
 				}
 
-				my $j = eval { decode_json ($msg) };
+				my $j = eval { decode_json $msg };
 
 				if (defined $j) {
 					foreach (@{$CONF->{apps}}) {
@@ -262,7 +265,7 @@ sub add_events () {
 	);
 
 	# poll caps lock status, on one of my laptop there is no led for this :(
-	if ($CONF->{capslock}) {
+	if ($CONF->{capslock}->{enabled}) {
 		push @EP, AnyEvent->timer (
 			after    => 0,    # first invoke ASAP
 			interval => 0.3,  # then invoke every 0.3 seconds
@@ -295,7 +298,7 @@ sub add_events () {
 	}
 
 	# poll clock by timer
-	if ($CONF->{clock}) {
+	if ($CONF->{clock}->{enabled}) {
 		push @EP, AnyEvent->timer (
 			after    => 0,    # first invoke ASAP
 			interval => 1,    # then invoke every 1 second
@@ -308,39 +311,119 @@ sub add_events () {
 		);
 	}
 
-	# poll battery status via dbus
-	# but it is possible to fetch this status via upower directly
-	if ($CONF->{battery}) {
-		push @EP, AnyEvent->timer (
-			after    => 0,    # first invoke ASAP
-			interval => 10,   # then invoke every 10 seconds
-			cb       => sub { # the callback to invoke
-				my $capacity = $properties->Get ('org.freedesktop.UPower.Device', 'Percentage');
-				my $state = $properties->Get ('org.freedesktop.UPower.Device', 'State');
-				my $time = '?';
+	# poll battery status via upower or /sys
+	if ($CONF->{battery}->{enabled}) {
+		# borrow data from upower output
+		if ($CONF->{battery}->{driver} eq 'upower') {
+			push @EP, AnyEvent->timer (
+				after    => 0,    # first invoke ASAP
+				interval => 10,   # then invoke every 10 seconds
+				cb       => sub { # the callback to invoke
+					my @up;
+					my $str = `upower -i $CONF->{battery}->{upower_device}`;
+					$charge = '⚡ ??% • 00:00';
 
-				if ($state == 2) {
-					# discharging
-					$time = $properties->Get ('org.freedesktop.UPower.Device', 'TimeToEmpty');
-					# time in seconds, let's translate it to hours:minutes
-					$state = '▼';
-				} elsif ($state == 1) {
-					# charging
-					$time = $properties->Get ('org.freedesktop.UPower.Device', 'TimeToFull');
-					$state = '▲';
-				} else {
-					# already charged
-					$time = 0;
-					$state = '•';
+					if ($?) {
+						return;
+					}
+
+					@up = split /\n/, $str;
+					my $percentage;
+					my $time_to; # full or empty
+					my $state;
+					my $hours = 0;
+					my $minutes = 0;
+
+					while ($str = pop (@up)) {
+						if (substr ($str, 4, 10) eq 'percentage') {
+							$percentage = substr $str, 25;
+							chomp $percentage;
+						} elsif (substr ($str, 4, 5) eq 'state') {
+							if (substr ($str, 25, 11) eq 'discharging') {
+								$state = '▼';
+							} elsif (substr ($str, 25, 8) eq 'charging') {
+								$state = '▲';
+							} else {
+								$state = '•';
+							}
+						} elsif (substr ($str, 4, 13) eq 'time to empty') {
+							$time_to = substr $str, 25;
+						} elsif (substr ($str, 4, 12) eq 'time to full') {
+							$time_to = substr $str, 25;
+						}
+					}
+
+					unless (defined $time_to && defined $percentage && defined $state) {
+						return;
+					}
+
+					chomp $time_to;
+
+					if (substr ($time_to, -7) eq 'minutes') {
+						$minutes = substr $time_to, 0, -8;
+						$minutes =~ tr/\,/./;
+						$minutes = int $minutes;
+					} elsif (substr ($time_to, -5) eq 'hours') {
+						$hours = substr $time_to, 0, -6;
+						$hours =~ tr/\,/./;
+						$minutes = int (60 * ($hours - int ($hours)));
+					}
+
+					$time_to = sprintf '%02d:%02d', $hours, $minutes;
+					$charge = sprintf '⚡ %s %s %s', $percentage, $state, $time_to;
 				}
+			);
+		} else {
+			# fallback borrow data from /sys
+			push @EP, AnyEvent->timer (
+				after    => 0,    # first invoke ASAP
+				interval => 10,   # then invoke every 10 seconds
+				cb       => sub { # the callback to invoke
+					my $current_charge;
+					my $charge_max;
+					my $state;
+					my ($CH, $CCM, $STH);
 
-				if ($time ne '?') {
-					$time = to_hours ($time);
+					unless (open $CH, '<', sprintf "%s/charge_now", $CONF->{battery}->{sys_dir}) {
+						$charge = '⚡ ??% •';
+						return;
+					}
+
+					$current_charge = <$CH>;
+					chomp $current_charge;
+					close $CH;
+
+					unless (open $CCM, '<', sprintf "%s/charge_full", $CONF->{battery}->{sys_dir}) {
+						$charge = '⚡ ??% •';
+						return;
+					}
+
+					$charge_max = <$CCM>;
+					chomp $charge_max;
+					close $CCM;
+
+					unless (open $STH, '<', sprintf "%s/status", $CONF->{battery}->{sys_dir}) {
+						$charge = '⚡ ??% •';
+						return;
+					}
+
+					$state = <$STH>;
+					chomp $state;
+					close $STH;
+
+					if ($state eq 'Charging') {
+						$state = '▲';
+					} elsif ($state eq 'Discharging') {
+						$state = '▼';
+					} else {
+						$state = '•';
+					}
+
+					my $capacity = int (100 * ($current_charge / $charge_max));
+					$charge = sprintf '⚡ %s%% %s', $capacity, $state;
 				}
-
-				$charge = sprintf '⚡ %s%% %s %s', $capacity, $state, $time;
-			}
-		);
+			);
+		}
 	}
 
 	# put all fast accessable stats in one callback
@@ -489,7 +572,8 @@ sub spawn (@) {
 	if ($pid) {
 		# Parent, work done, return
 		return;
-	} elsif ($pid == 0) {
+	} elsif ($pid == 0) { # Child
+		setsid ();
 		# it seems that at least vscode creashes if we close stdio handles
 		open STDOUT, '>', '/dev/null';
 		open STDERR, '>', '/dev/null';
@@ -500,6 +584,7 @@ sub spawn (@) {
 			# in this place parent quits
 			exit 0;
 		} elsif ($pid == 0) { # Child
+			setsid ();
 			my $prg = shift @args;
 			# weird situation, silently quit here :)
 			exit 0 unless (defined $prg);
@@ -510,7 +595,7 @@ sub spawn (@) {
 				exec $prg;
 			}
 		} else { # Unable to fork()
-			syswrite STDERR, "[{\"full_text\":\"ERROR: Could not fork new process: $!\",\"color\":\"#ff0000\"}],\n";
+			print STDERR "[{\"full_text\":\"ERROR: Could not fork new process: $!\",\"color\":\"#ff0000\"}],\n";
 		}
 	}
 
@@ -550,7 +635,12 @@ sub to_hours ($) {
 }
 
 sub readconf () {
-	my $file = "$ENV{HOME}/.i3/config.json";
+	my $file = "$ENV{HOME}/.i3/i3status-anyevent.json";
+
+	unless (-f $file) {
+		$file = "$ENV{HOME}/.i3/config.json";
+	}
+
 	my $FH;
 
 	unless (open $FH, '<', $file) {
