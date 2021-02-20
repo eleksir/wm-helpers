@@ -245,18 +245,21 @@ sub add_events () {
 				my $j = eval { decode_json $msg };
 
 				if (defined $j) {
-					foreach (@{$CONF->{apps}}) {
-						unless (defined $_->{name}) {
-							next;
-						}
+					# left button click, without shift, ctrl, alt, etc
+					if (($j->{button} == 1) && ($#{$j->{modifiers}} < 0)){
+						foreach (@{$CONF->{apps}}) {
+							unless (defined $_->{name}) {
+								next;
+							}
 
-						unless (defined $j->{name}) {
-							next;
-						}
+							unless (defined $j->{name}) {
+								next;
+							}
 
-						if ($j->{name} eq $_->{name}) {
-							spawn ($_->{cmd});
-							last;
+							if ($j->{name} eq $_->{name}) {
+								spawn ($_->{cmd});
+								last;
+							}
 						}
 					}
 				}
