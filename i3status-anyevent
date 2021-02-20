@@ -353,23 +353,28 @@ sub add_events () {
 						}
 					}
 
-					unless (defined $time_to && defined $percentage && defined $state) {
+					unless (defined $percentage && defined $state) {
 						return;
 					}
 
-					chomp $time_to;
+					if (defined $time_to) {
+						chomp $time_to;
 
-					if (substr ($time_to, -7) eq 'minutes') {
-						$minutes = substr $time_to, 0, -8;
-						$minutes =~ tr/\,/./;
-						$minutes = int $minutes;
-					} elsif (substr ($time_to, -5) eq 'hours') {
-						$hours = substr $time_to, 0, -6;
-						$hours =~ tr/\,/./;
-						$minutes = int (60 * ($hours - int ($hours)));
+						if (substr ($time_to, -7) eq 'minutes') {
+							$minutes = substr $time_to, 0, -8;
+							$minutes =~ tr/\,/./;
+							$minutes = int $minutes;
+						} elsif (substr ($time_to, -5) eq 'hours') {
+							$hours = substr $time_to, 0, -6;
+							$hours =~ tr/\,/./;
+							$minutes = int (60 * ($hours - int ($hours)));
+						}
+
+						$time_to = sprintf '%02d:%02d', $hours, $minutes;
+					} else {
+						$time_to = "00:00";
 					}
 
-					$time_to = sprintf '%02d:%02d', $hours, $minutes;
 					$charge = sprintf '⚡ %s %s %s', $percentage, $state, $time_to;
 				}
 			);
