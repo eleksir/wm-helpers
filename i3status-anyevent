@@ -551,8 +551,9 @@ sub to_hours ($) {
 
 sub readconf () {
 	my $file = "$ENV{HOME}/.i3/config.json";
+	my $FH;
 
-	unless (open my $FH, '<', $file) {
+	unless (open $FH, '<', $file) {
 		die "Unable to open $file: $!\n";
 	}
 
