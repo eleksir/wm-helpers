@@ -69,11 +69,23 @@ my $file_check_mtime = 0;
 my $output_string;
 my $old_output_string = '';
 my $STDIN_FIRST_LINE_DROPPED = 0;
+# hp, kernel 5.4.x
+my $BATTERY_CHARGE_NOW_FILE = sprintf '%s/charge_now', $CONF->{battery}->{sys_dir};
+
+unless (-f $BATTERY_CHARGE_NOW_FILE) {
+	# lenovo, kernel 4.4.x
+	$BATTERY_CHARGE_NOW_FILE = sprintf '%s/energy_now', $CONF->{battery}->{sys_dir};
+}
+
+# hp, kernel 5.4.x
+my $BATTERY_CHARGE_FULL_FILE = sprintf '%s/charge_full', $CONF->{battery}->{sys_dir};
+
+unless (-f $BATTERY_CHARGE_FULL_FILE) {
+	# lenovo, kernel 4.4.x
+	$BATTERY_CHARGE_FULL_FILE = sprintf '%s/energy_full', $CONF->{battery}->{sys_dir};
+}
 
 my $CAPS_LED_PATH = find_caps_led ();
-
-# for fetching battery stats via dee-boos :)
-my $properties;
 
 # opened windows info storage ref
 my $win;
@@ -375,7 +387,7 @@ sub add_events () {
 
 						$time_to = sprintf '%02d:%02d', $hours, $minutes;
 					} else {
-						$time_to = "00:00";
+						$time_to = '00:00';
 					}
 
 					$charge = sprintf '⚡ %s %s %s', $percentage, $state, $time_to;
@@ -392,7 +404,7 @@ sub add_events () {
 					my $state;
 					my ($CH, $CCM, $STH);
 
-					unless (open $CH, '<', sprintf "%s/charge_now", $CONF->{battery}->{sys_dir}) {
+					unless (open $CH, '<', $BATTERY_CHARGE_NOW_FILE) {
 						$charge = '⚡ ??% •';
 						return;
 					}
@@ -401,7 +413,7 @@ sub add_events () {
 					chomp $current_charge;
 					close $CH;
 
-					unless (open $CCM, '<', sprintf "%s/charge_full", $CONF->{battery}->{sys_dir}) {
+					unless (open $CCM, '<', $BATTERY_CHARGE_FULL_FILE) {
 						$charge = '⚡ ??% •';
 						return;
 					}
@@ -410,7 +422,7 @@ sub add_events () {
 					chomp $charge_max;
 					close $CCM;
 
-					unless (open $STH, '<', sprintf "%s/status", $CONF->{battery}->{sys_dir}) {
+					unless (open $STH, '<', sprintf '%s/status', $CONF->{battery}->{sys_dir}) {
 						$charge = '⚡ ??% •';
 						return;
 					}
@@ -571,6 +583,8 @@ sub add_events () {
 			}
 		);
 	}
+
+	return;
 }
 
 sub spawn (@) {
@@ -695,4 +709,6 @@ sub active_win_borders () {
 			$app->{border} = $app->{border_inactive};
 		}
 	}
+
+	return;
 }
