@@ -162,16 +162,16 @@ sub add_events () {
 				}
 			}
 
-			if ($CONF->{cpu_temp}) {
-				push @{$OUTPUT}, { color => '#3e78fd', full_text => $cputemp };
+			if ($CONF->{cpu_temp}->{enabled}) {
+				push @{$OUTPUT}, { color => $CONF->{color}, full_text => $cputemp };
 			}
 
 			if ($CONF->{mem}) {
-				push @{$OUTPUT}, { color => '#3e78fd', full_text => $meminfo };
+				push @{$OUTPUT}, { color => $CONF->{color}, full_text => $meminfo };
 			}
 
 			if ($CONF->{la}) {
-				push @{$OUTPUT}, { color => '#3e78fd', full_text => "LA: $la" };
+				push @{$OUTPUT}, { color => $CONF->{color}, full_text => "LA: $la" };
 			}
 
 			my $vpn_str = 'VPN:';
@@ -197,11 +197,11 @@ sub add_events () {
 			}
 
 			if ($CONF->{vpn}->{tcp_check}->{enabled} || $CONF->{vpn}->{enabled}) {
-				push @{$OUTPUT}, { color => '#3e78fd', full_text => $vpn_str };
+				push @{$OUTPUT}, { color => $CONF->{color}, full_text => $vpn_str };
 			}
 
 			if ($CONF->{battery}->{enabled}) {
-				push @{$OUTPUT}, { color => '#3e78fd', full_text => $charge };
+				push @{$OUTPUT}, { color => $CONF->{color}, full_text => $charge };
 			}
 
 			if ($CONF->{clock}->{enabled}) {
@@ -489,19 +489,19 @@ sub add_events () {
 			}
 
 			# populate cpu temperature info
-			if ($CONF->{cpu_temp}) {
+			if ($CONF->{cpu_temp}->{enabled}) {
 				my $hwmon = 1;
 
 				if (defined $CPUTEMPHANDLE) {
 					if (tell $CPUTEMPHANDLE == -1) {
-						if (open $CPUTEMPHANDLE, '<', '/sys/class/hwmon/hwmon0/temp1_input') {
+						if (open $CPUTEMPHANDLE, '<', $CONF->{cpu_temp}->{file}) {
 							$hwmon = 1;
 						} else {
 							$hwmon = 0;
 						}
 					}
 				} else {
-					unless (open $CPUTEMPHANDLE, '<', '/sys/class/hwmon/hwmon0/temp1_input') {
+					unless (open $CPUTEMPHANDLE, '<', $CONF->{cpu_temp}->{file}) {
 						$hwmon = 0;
 					};
 				}

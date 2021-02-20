@@ -1,5 +1,9 @@
 # Enable "plugin" 1, disable "plugin" 0
 {
+# default text and background colors
+"color" : "#3e78fd",
+"background" : "#edeceb",
+
 # Load Average
 "la" : 1,
 
@@ -25,7 +29,10 @@
 },
 
 # 0-th core temperature
-"cpu_temp": 1,
+"cpu_temp": {
+	"enabled": 1,
+	"file": "/sys/class/hwmon/hwmon0/temp1_input"
+},
 
 # Caps Lock status
 "capslock": {
