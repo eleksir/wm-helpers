@@ -1,5 +1,7 @@
 #!/usr/bin/perl
 
+# TODO: on i3wm reload (i3status restart), restore active windows status 
+
 # we need to disable hash shuffling in order to make as less prints to stdout as possible
 BEGIN {
 	unless (defined $ENV{PERL_PERTURB_KEYS}) {
@@ -689,10 +691,16 @@ sub to_hours ($) {
 }
 
 sub readconf () {
-	my $file = "$ENV{HOME}/.i3/i3status-anyevent.json";
+	my $i3dir = "$ENV{HOME}/.config/i3";
+
+	unless (-d $i3dir) {
+		$i3dir = "$ENV{HOME}/.i3";
+	}
+
+	my $file = "$i3dir/i3status-anyevent.json";
 
 	unless (-f $file) {
-		$file = "$ENV{HOME}/.i3/config.json";
+		$file = "$i3dir/config.json";
 	}
 
 	my $FH;
