@@ -68,7 +68,8 @@ my $charge = '';
 my $tcp_check = 0;
 my $file_check = 0;
 my $file_check_mtime = 0;
-my $simple_volume_pa = '??';
+my $simple_volume_pa = '<big>♪</big> ??%';
+my $interfaces = '??';
 my $output_string;
 my $old_output_string = '';
 my $STDIN_FIRST_LINE_DROPPED = 0;
@@ -213,6 +214,10 @@ sub add_events () {
 
 			if ($CONF->{vpn}->{tcp_check}->{enabled} || $CONF->{vpn}->{enabled}) {
 				push @{$OUTPUT}, { color => $CONF->{color}, full_text => $vpn_str };
+			}
+
+			if ($CONF->{'net-if'}->{enabled}) {
+				push @{$OUTPUT}, { color => $CONF->{color}, full_text => $interfaces, markup => 'pango' };
 			}
 
 			if ($CONF->{battery}->{enabled}) {
@@ -613,6 +618,35 @@ sub add_events () {
 						$simple_volume_pa = $1;
 						last;
 					}
+				}
+			}
+		);
+	}
+
+	# poll operstate for given net ifs
+	if ($CONF->{'net-if'}->{enabled}) {
+		push @EP, AnyEvent->timer (
+			after    => 0,    # first invoke ASAP
+			interval => 1,    # then invoke every 1 second
+			cb       => sub { # the callback to invoke
+				my @ifstate;
+
+				foreach my $if (@{$CONF->{'net-if'}->{if}}) {
+					if (open my $STATEFH, '<', "$if->{dir}/operstate") {
+						my $state = <$STATEFH>;
+						close $STATEFH;
+						chomp $state;
+
+						if ($state eq 'up') {
+							push @ifstate, sprintf '%s:<span foreground="%s">▲</span>', $if->{name}, $CONF->{'net-if'}->{up_color};
+						} else {
+							push @ifstate, sprintf '%s:<span foreground="%s">▼</span>', $if->{name}, $CONF->{'net-if'}->{down_color};
+						}
+					}
+				}
+
+				if ($#ifstate >=0 ) {
+					$interfaces = join '  ', @ifstate;
 				}
 			}
 		);

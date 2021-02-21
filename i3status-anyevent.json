@@ -51,7 +51,7 @@
 	"tcp_check" : {
 		"enabled": 0,
 		"host": "somehost.tld",
-		"port": "443",
+		"port": 443,
 		"timeout" : 3
 	}
 },
@@ -60,6 +60,23 @@
 # it periodically polls pulseaudio via "pactl list sinks" command
 # so it's not light on system resources as i'd like
 "simple-volume-pa": 0,
+
+"net-if" : {
+	"enabled" : 0,
+# html (actually, pango) notation
+	"down_color" : "red",
+	"up_color" : "green",
+	"if" : [
+		{
+			"name" : "eth0",
+			"dir" : "/sys/class/net/eth0"
+		},
+		{
+			"name" : "wlan0",
+			"dir" : "/sys/class/net/wlan0"
+		}
+	]
+},
 
 # Weather to display Application Buttons
 "app_buttons": 1,
