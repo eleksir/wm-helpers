@@ -37,8 +37,8 @@
 # Caps Lock status
 "capslock": {
 	"enabled" : 1,
-	"background" : "#3e78fd",
-	"color" : "#edeceb"
+	"background" : "#edeceb",
+	"color" : "#3e78fd"
 },
 
 # OpenVPN status. Note that directive status in openvpn.conf should point to

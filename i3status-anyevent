@@ -161,17 +161,17 @@ sub add_events () {
 			if ($CONF->{capslock}->{enabled}) {
 				if ($caps_state) {
 					push @{$OUTPUT}, {
-						background => $CONF->{capslock}->{background},
-						color => $CONF->{capslock}->{color},
+						background => $CONF->{capslock}->{color},
+						color => $CONF->{capslock}->{background},
 						border => $CONF->{capslock}->{background},
 						full_text => 'caps',
 						markup => 'pango'
 					};
 				} else {
 					push @{$OUTPUT}, {
-						color => $CONF->{capslock}->{background},
-						background => $CONF->{capslock}->{color},
-						border => $CONF->{capslock}->{color},
+						color => $CONF->{capslock}->{color},
+						background => $CONF->{capslock}->{background},
+						border => $CONF->{capslock}->{background},
 						full_text => 'caps',
 						markup => 'pango'
 					};
