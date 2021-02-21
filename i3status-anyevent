@@ -545,33 +545,7 @@ sub add_events () {
 		},
 	);
 
-	# Try to tcp connect to server
-	if ($CONF->{vpn}->{tcp_check}->{enabled}) {
-		push @EP, AnyEvent->timer (
-			after    => 0,    # first invoke ASAP
-			interval => 5,    # then invoke every 5 seconds
-			cb       => sub { # the callback to invoke
-				if (
-					my $sock = IO::Socket->new (
-						Domain   => AF_INET,
-						proto    => 'tcp',
-						PeerHost => $CONF->{vpn}->{tcp_check}->{host},
-						PeerPort => $CONF->{vpn}->{tcp_check}->{port},
-						Type     => SOCK_STREAM,
-						Timeout  => $CONF->{vpn}->{tcp_check}->{timeout}
-					)
-				) {
-					$sock->shutdown (SHUT_WR);
-					$sock->close ();
-					$tcp_check = 1;
-				} else {
-					$tcp_check = 0;
-				}
-			}
-		);
-	}
-
-	# check file mtime
+	# check openvpn state-file mtime
 	if ($CONF->{vpn}->{enabled}) {
 		push @EP, AnyEvent->timer (
 			after    => 0,    # first invoke ASAP
@@ -593,6 +567,32 @@ sub add_events () {
 				}
 			}
 		);
+
+		# Try to tcp connect to server in vpn network
+		if ($CONF->{vpn}->{tcp_check}->{enabled}) {
+			push @EP, AnyEvent->timer (
+				after    => 0,    # first invoke ASAP
+				interval => 5,    # then invoke every 5 seconds
+				cb       => sub { # the callback to invoke
+					if (
+						my $sock = IO::Socket->new (
+							Domain   => AF_INET,
+							proto    => 'tcp',
+							PeerHost => $CONF->{vpn}->{tcp_check}->{host},
+							PeerPort => $CONF->{vpn}->{tcp_check}->{port},
+							Type     => SOCK_STREAM,
+							Timeout  => $CONF->{vpn}->{tcp_check}->{timeout}
+						)
+					) {
+						$sock->shutdown (SHUT_WR);
+						$sock->close ();
+						$tcp_check = 1;
+					} else {
+						$tcp_check = 0;
+					}
+				}
+			);
+		}
 	}
 
 	# poll pulseaudio volume on first sink in list
