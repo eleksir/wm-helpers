@@ -650,9 +650,8 @@ sub spawn (@) {
 			} else {
 				exec $prg;
 			}
-		} else { # Unable to fork()
-			print STDERR "[{\"full_text\":\"ERROR: Could not fork new process: $!\",\"color\":\"#ff0000\"}],\n";
 		}
+		# else - we just unable to fork, so silently ignore event
 	}
 
 	return;
