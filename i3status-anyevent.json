@@ -56,6 +56,11 @@
 	}
 },
 
+# Simplified volume indicator
+# it periodically polls pulseaudio via "pactl list sinks" command
+# so it's not light on system resources as i'd like
+"simple-volume-pa": 0,
+
 # Weather to display Application Buttons
 "app_buttons": 1,
 

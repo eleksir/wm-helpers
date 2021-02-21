@@ -66,6 +66,7 @@ my $charge = '';
 my $tcp_check = 0;
 my $file_check = 0;
 my $file_check_mtime = 0;
+my $simple_volume_pa = '??';
 my $output_string;
 my $old_output_string = '';
 my $STDIN_FIRST_LINE_DROPPED = 0;
@@ -213,7 +214,15 @@ sub add_events () {
 			}
 
 			if ($CONF->{battery}->{enabled}) {
-				push @{$OUTPUT}, { color => $CONF->{color}, full_text => $charge };
+				push @{$OUTPUT}, { color => $CONF->{color}, full_text => $charge, markup => 'pango' };
+			}
+
+			if ($CONF->{'simple-volume-pa'}) {
+				push @{$OUTPUT}, {
+					color => $CONF->{color},
+					full_text => sprintf ('<big>♪</big> %s%%', $simple_volume_pa),
+					markup => 'pango'
+				};
 			}
 
 			if ($CONF->{clock}->{enabled}) {
@@ -336,7 +345,7 @@ sub add_events () {
 				cb       => sub { # the callback to invoke
 					my @up;
 					my $str = `upower -i $CONF->{battery}->{upower_device}`;
-					$charge = '⚡ ??% • 00:00';
+					$charge = '<big>⚡</big> ??% • 00:00';
 
 					if ($?) {
 						return;
@@ -390,7 +399,7 @@ sub add_events () {
 						$time_to = '00:00';
 					}
 
-					$charge = sprintf '⚡ %s %s %s', $percentage, $state, $time_to;
+					$charge = sprintf '<big>⚡</big> %s %s %s', $percentage, $state, $time_to;
 				}
 			);
 		} else {
@@ -405,7 +414,7 @@ sub add_events () {
 					my ($CH, $CCM, $STH);
 
 					unless (open $CH, '<', $BATTERY_CHARGE_NOW_FILE) {
-						$charge = '⚡ ??% •';
+						$charge = '<big>⚡</big> ??% •';
 						return;
 					}
 
@@ -414,7 +423,7 @@ sub add_events () {
 					close $CH;
 
 					unless (open $CCM, '<', $BATTERY_CHARGE_FULL_FILE) {
-						$charge = '⚡ ??% •';
+						$charge = '<big>⚡</big> ??% •';
 						return;
 					}
 
@@ -423,7 +432,7 @@ sub add_events () {
 					close $CCM;
 
 					unless (open $STH, '<', sprintf '%s/status', $CONF->{battery}->{sys_dir}) {
-						$charge = '⚡ ??% •';
+						$charge = '<big>⚡</big> ??% •';
 						return;
 					}
 
@@ -440,7 +449,7 @@ sub add_events () {
 					}
 
 					my $capacity = int (100 * ($current_charge / $charge_max));
-					$charge = sprintf '⚡ %s%% %s', $capacity, $state;
+					$charge = sprintf '<big>⚡</big> %s%% %s', $capacity, $state;
 				}
 			);
 		}
@@ -579,6 +588,29 @@ sub add_events () {
 				} else {
 					$mtime = 0;
 					$file_check = 0;
+				}
+			}
+		);
+	}
+
+	# poll pulseaudio volume on first sink in list
+	if ($CONF->{clock}->{enabled}) {
+		push @EP, AnyEvent->timer (
+			after    => 0,    # first invoke ASAP
+			interval => 1,    # then invoke every 1 second
+			cb       => sub { # the callback to invoke
+				my $pactl = `LC_ALL=C pactl list sinks`;
+
+				if ($?) {
+					# we've some error here, so quit further processing
+					return;
+				}
+
+				foreach my $str (split /\n/, $pactl) {
+					if ($str =~ /^\s+Volume\:\s+[a-z|A-Z\\-]+\:\s+\d+\s+\/\s+(\d+)% /xms ) {
+						$simple_volume_pa = $1;
+						last;
+					}
 				}
 			}
 		);
