@@ -160,7 +160,7 @@ sub add_events () {
 					push @{$OUTPUT}, {
 						background => $CONF->{capslock}->{background},
 						color => $CONF->{capslock}->{color},
-						border => '#edeceb',
+						border => $CONF->{capslock}->{background},
 						full_text => 'caps',
 						markup => 'pango'
 					};
@@ -168,7 +168,7 @@ sub add_events () {
 					push @{$OUTPUT}, {
 						color => $CONF->{capslock}->{background},
 						background => $CONF->{capslock}->{color},
-						border => '#edeceb',
+						border => $CONF->{capslock}->{color},
 						full_text => 'caps',
 						markup => 'pango'
 					};
