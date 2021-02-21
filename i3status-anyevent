@@ -596,7 +596,7 @@ sub add_events () {
 	}
 
 	# poll pulseaudio volume on first sink in list
-	if ($CONF->{clock}->{enabled}) {
+	if ($CONF->{'simple-volume-pa'}) {
 		push @EP, AnyEvent->timer (
 			after    => 0,    # first invoke ASAP
 			interval => 1,    # then invoke every 1 second
