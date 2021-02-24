@@ -233,7 +233,7 @@ sub add_events () {
 			}
 
 			if ($CONF->{clock}->{enabled}) {
-				push @{$OUTPUT}, { color => $CONF->{clock}->{color}, full_text => "<big>$wallclock</big>", markup => 'pango'};
+				push @{$OUTPUT}, { name => 'wallclock', color => $CONF->{clock}->{color}, full_text => "<big>$wallclock</big>", markup => 'pango'};
 			}
 
 			$output_string = eval { encode_json $OUTPUT };
@@ -274,7 +274,7 @@ sub add_events () {
 
 				if (defined $j) {
 					# left button click, without shift, ctrl, alt, etc
-					if (($j->{button} == 1) && ($#{$j->{modifiers}} < 0)){
+					if (($j->{button} == 1) && ($#{$j->{modifiers}} < 0)) {
 						foreach (@{$CONF->{apps}}) {
 							unless (defined $_->{name}) {
 								next;
@@ -287,6 +287,18 @@ sub add_events () {
 							if ($j->{name} eq $_->{name}) {
 								spawn ($_->{cmd});
 								last;
+							}
+						}
+					}
+
+					if (($j->{name} eq 'wallclock') && ($CONF->{clock}->{enabled})) {
+						if ($CONF->{clock}->{left_click}->{enabled}) {
+							if (($j->{button} == 1) && ($#{$j->{modifiers}} < 0)) {
+								spawn ($CONF->{clock}->{left_click}->{cmd});
+							}
+						} elsif ($CONF->{clock}->{right_click}->{enabled}) {
+							if (($j->{button} == 2) && ($#{$j->{modifiers}} < 0)) {
+								spawn ($CONF->{clock}->{right_click}->{cmd});
 							}
 						}
 					}

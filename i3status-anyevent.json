@@ -14,7 +14,15 @@
 "clock": {
 	"enabled" : 1,
 # html (actually, pango) color notation
-	"color" : "#000000"
+	"color" : "#000000",
+	"left_click" : {
+		"enabled" : 1,
+		"cmd" : "orage"
+	},
+	"right_click" : {
+		"enabled" : 0,
+		"cmd" : "true"
+	}
 },
 
 # Battery
