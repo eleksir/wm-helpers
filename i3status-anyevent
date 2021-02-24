@@ -42,7 +42,7 @@ $i3->connect->recv or die 'Unable to connect to i3';
 my @EP;
 
 # reload config and re-apply it on SIGHUP
-$SIG{HUP} = sub {
+local $SIG{HUP} = sub {
 	$CONF = readconf ();
 	active_win_borders ();
 	$#EP = -1;
