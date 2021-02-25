@@ -86,6 +86,32 @@
 	]
 },
 
+# Intended for use with desktop notifications
+# Because it inherits all env vars from i3, it can intercat with dbus and other
+# such user session services.
+"cron" : {
+	"enabled" : 0,
+	"tasks" : [
+		{
+			"time" : "55 23 * * *",
+			"cmd" : [
+				"notify-send 'Sleeping Time!' 'Take a nap.'",
+				"mpg123 -q /usr/share/sounds/complete_quest_requirement.mp3"
+			]
+		},
+
+		{
+# time in crontab format
+			"time" : "55 12 * * 2,4",
+# commands as it should be invoked in bash script
+			"cmd" : [
+				"notify-send 'Pizza time!' 'M-m-m, tasty!'",
+				"mpg123 -q /usr/share/sounds/complete_quest_requirement.mp3"
+			]
+		}
+	]
+},
+
 # Weather to display Application Buttons
 "app_buttons": 1,
 

@@ -1,6 +1,8 @@
 #!/usr/bin/perl
 
-# TODO: on i3wm reload (i3status restart), restore active windows status 
+# TODO: on i3wm reload (i3status restart), restore active windows status
+# TODO: make battery plugin take into account charge level, add ability to call suspend2disk on critical charge level
+# TODO: More complex PA-plugin with volume adjustment of default sink
 
 # we need to disable hash shuffling in order to make as less prints to stdout as possible
 BEGIN {
@@ -18,6 +20,7 @@ use utf8;
 use open qw (:std :utf8);
 use Fcntl qw (:seek);
 use AnyEvent;
+use AnyEvent::Timer::Cron;
 use AnyEvent::I3;
 use JSON::XS;
 use Encode;
@@ -150,7 +153,7 @@ sub add_events () {
 	# Actually print messages there
 	push @EP, AnyEvent->timer (
 		after    => 1,    # sleep 1 second
-		interval => 0.3,  # then invoke every 1 second
+		interval => 0.3,  # then invoke every ~1/3 second
 		cb       => sub { # the callback to invoke
 			my $OUTPUT;
 
@@ -662,6 +665,21 @@ sub add_events () {
 				}
 			}
 		);
+	}
+
+	# run all cron jobs from config
+	if ($CONF->{'cron'}->{enabled}) {
+		foreach my $task (@{$CONF->{'cron'}->{tasks}}) {
+			push @EP, AnyEvent::Timer::Cron->new (
+				time_zone => 'local',
+				cron => $task->{time},
+				cb => sub {
+					foreach my $cmd (@{$task->{cmd}}) {
+						`$cmd`;
+					}
+				}
+			)
+		}
 	}
 
 	return;
