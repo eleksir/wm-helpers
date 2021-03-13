@@ -2,15 +2,10 @@
 #
 # Hibernates system if battery charge drops under $MIN_CHARGE and battery discharging
 
-
 use strict;
-use warnings "all";
-use Fcntl;
+use warnings;
 
-sub logger($); # logs messages if $debug != 0
-# maybe one time i'll use it
-sub i3wmstate; # returns 1 if i3wm running, else - 0
-
+sub logger; # logs messages if $debug != 0
 
 $0 = 'acpid.pl';
 my $debug = 0;
@@ -18,8 +13,8 @@ my $MIN_CHARGE = 10;
 
 my $base = '/sys/class/power_supply/BAT0';
 
-unless(-f "$base/present") {
-	logger("Battery info at /sys/class/BAT0/present not found, quitting.\n");
+unless (-f "$base/present") {
+	logger "Battery info at /sys/class/BAT0/present not found, quitting.";
 	exit 0;
 }
 
@@ -27,90 +22,89 @@ my $battery_present = 2;
 my $battery_check = 2;
 my $charging = 2;
 
-while ( sleep(180) ) {
-# check that battery is in place
-	open(ACPI, "$base/present") or next;
-	my $buf = '';
+while (sleep 180) {
+	open (my $batteryFH, '<', "$base/present") or next;
+	my $buf;
 
-	if (read(ACPI, $buf, 1)) {
+	if (read ($batteryFH, $buf, 1)) {
 		if ($battery_check == 0) {
-			logger("Ability to read from /sys/class/BAT0/present restored\n");
+			logger "Ability to read from $base/present restored";
 			$battery_check = 1;
 		}
 
 		if ($buf == '0') {
-			if ($battery_present != 0) {
-				logger("We have no battery, skipping charge level polling until it appears\n");
+			if ($battery_present) {
+				logger "We have no battery, skipping charge level polling until it appears";
 				$battery_present = 0;
 			}
 
-			close ACPI;
+			close $batteryFH;
 			next;
 		}
 	} else {
-		if ($battery_check != 0) {
-			logger("Unable to read from /sys/class/BAT0/present\n");
+		if ($battery_check) {
+			logger "Unable to read from /sys/class/BAT0/present";
 			$battery_check = 0;
 		}
 
-		close ACPI;
+		close $batteryFH;
 		next;
 	}
 
-	close ACPI;
+	close $batteryFH;
 	$battery_present = 1;
 
 # check status, we have no need to poll battery if it charging/charged
 	unless (-f "$base/status") {
-		logger("Something broken in /sys, unable to find $base/status, quitting\n");
+		logger "Something broken in /sys, unable to find $base/status, quitting";
 		exit 1;
 	}
 
 # TODO: file access save state and print on change
-	open(STATUS, "$base/status") or do {
-		logger("Unable to open $base/status\n");
+	open (my $statusFH, '<', "$base/status") or do {
+		logger "Unable to open $base/status";
 		next;
 	};
 
-	$buf = <STATUS>;
-	close STATUS;
-
-	chomp($buf);
+	$buf = <$statusFH>;
+	close $statusFH;
+	chomp $buf;
 
 	if ($buf ne 'Discharging') {
 		if ($charging != 1) {
-			logger("Battery charging.\n");
+			logger "Battery charging.";
 			$charging = 1;
 		}
 	} else {
-		if ($charging != 0) {
-			logger("Battery discharging.\n");
+		if ($charging) {
+			logger "Battery discharging.";
 			$charging = 0;
 		}
 	}
 
 # read charge state
 	unless (-f "$base/capacity") {
-		logger("Something broken in /sys, unable to find $base/capacity, quitting\n");
+		logger "Something broken in /sys, unable to find $base/capacity, quitting";
 		exit 1;
 	}
 
 # TODO: file access save state and print on change
-	open(CHARGE, "$base/capacity") or do {
+	open (my $chargeFH, '<', "$base/capacity") or do {
 		logger("Unable to open $base/capacity\n");
 		next;
 	};
 
-	read(CHARGE, $buf, 3) or do {
-		logger("Unable to read $base/capacity, but file is in place\n");
+	read ($chargeFH, $buf, 3) or do {
+		logger "Unable to read $base/capacity, but file is in place";
 		next;
 	};
 
-	chomp($buf); # just in case
+	close $chargeFH;
+	chomp $buf; # just in case
 
 	if ($buf < $MIN_CHARGE) {
 		if ($charging != 0) { # discharging
-			logger("Battery charge is less than 10%, hibernating\n");
+			logger "Battery charge is less than 10%, hibernating";
 			`dbus-send --system --print-reply --dest="org.freedesktop.UPower" /org/freedesktop/UPower org.freedesktop.UPower.Hibernate`;
 		}
 	} else {
@@ -122,51 +116,15 @@ while ( sleep(180) ) {
 			`notify-send --urgency=normal --expire-time=3000 "Battery overcharging"`;
 		}
 
-		logger("Charge is $buf%\n");
+		logger "Charge is $buf%";
 	}
 }
 
 
-sub logger ($) {
-	if ($debug != 0) {
+sub logger {
+	if ($debug) {
 		my $msg = shift;
-		$msg = localtime() . ' ' . $msg;
+		$msg = sprintf '%s %s\n', localtime (), $msg;
 		syswrite STDOUT, $msg;
 	}
-}
-
-sub i3wmstate {
-	my $flag = 0;
-	opendir(P, '/proc') || die 'no /proc found!';
-
-	while (readdir(P)) {
-		my $pid = $_;
-		next unless(defined($pid));
-		next if ($pid eq '');
-
-		if (-d "/proc/$pid") {
-			# dir UID == APCID.pl process user owner
-			if ((stat("/proc/$pid"))[4] == int(getpwnam($ENV{'LOGNAME'}))) {
-				next unless(-r "/proc/$pid/cmdline");
-				open(CMDLINE, "/proc/$pid/cmdline") || die "unable to open /proc/$pid/cmdline";
-				my $cl = <CMDLINE>;
-				close(CMDLINE);
-
-				if(defined($cl)) {
-					if ((substr($cl, 0, 2) eq 'i3') and (length($cl) <= 4)) {
-						$flag = 1;
-						undef $cl;
-						undef $pid;
-						last;
-					}
-				}
-
-				undef $cl;
-			}
-		}
-
-		undef $pid;
-	}
-
-	return $flag;
 }
