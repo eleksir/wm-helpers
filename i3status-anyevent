@@ -574,7 +574,7 @@ sub add_events () {
 				my $mtime = (stat $CONF->{vpn}->{statusfile}) [8];
 
 				if (defined $mtime) {
-					if (($mtime - $file_check_mtime) < $CONF->{vpn}->{mtime_threshold}) {
+					if ((time () - $mtime) < $CONF->{vpn}->{mtime_threshold}) {
 						$file_check = 1;
 					} else {
 						$file_check = 0;
