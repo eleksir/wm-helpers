@@ -571,7 +571,7 @@ sub add_events () {
 			after    => 0,    # first invoke ASAP
 			interval => 3,    # then invoke every 3 seconds
 			cb       => sub { # the callback to invoke
-				my $mtime = (stat $CONF->{vpn}->{statusfile}) [8];
+				my $mtime = (stat $CONF->{vpn}->{statusfile}) [9];
 
 				if (defined $mtime) {
 					if ((time () - $mtime) < $CONF->{vpn}->{mtime_threshold}) {
